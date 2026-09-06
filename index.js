@@ -38,97 +38,160 @@ const commands = [
   dashboardCommand.data.toJSON(),
 ];
 
-const client = new Client({
-  intents: [GatewayIntentBits.Guilds],
-  rest: { timeout: 30_000 },
-});
+/** @type {Client | null} */
+let client = null;
+let commandsRegistered = false;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 async function registerCommands() {
+  if (commandsRegistered) return;
+
   const rest = new REST({ version: '10' }).setToken(token);
   await rest.put(Routes.applicationCommands(clientId), { body: commands });
+  commandsRegistered = true;
   console.log('Slash commands registered.');
 }
 
-client.on(Events.Error, (error) => {
-  console.error('Discord client error:', error);
-});
+function attachClientHandlers(discordClient) {
+  discordClient.on(Events.Error, (error) => {
+    console.error('Discord client error:', error);
+  });
 
-client.on(Events.Warn, (message) => {
-  console.warn('Discord client warn:', message);
-});
+  discordClient.on(Events.Warn, (message) => {
+    console.warn('Discord client warn:', message);
+  });
 
-client.on(Events.ShardDisconnect, (event, shardId) => {
-  console.error(`Shard ${shardId} disconnected:`, event.code, event.reason);
-});
+  discordClient.on(Events.ShardDisconnect, (event, shardId) => {
+    console.error(`Shard ${shardId} disconnected:`, event.code, event.reason);
+  });
 
-client.on(Events.ShardError, (error, shardId) => {
-  console.error(`Shard ${shardId} error:`, error);
-});
+  discordClient.on(Events.ShardError, (error, shardId) => {
+    console.error(`Shard ${shardId} error:`, error);
+  });
 
-client.once(Events.ClientReady, async (readyClient) => {
-  console.log(`Logged in as ${readyClient.user.tag}`);
-  try {
-    await registerCommands();
-  } catch (error) {
-    console.error('Slash command registration failed:', error);
-  }
-});
+  discordClient.once(Events.ClientReady, async (readyClient) => {
+    console.log(`Logged in as ${readyClient.user.tag}`);
+    try {
+      await registerCommands();
+    } catch (error) {
+      console.error('Slash command registration failed:', error);
+    }
+  });
 
-client.on(Events.InteractionCreate, async (interaction) => {
-  try {
-    if (interaction.isChatInputCommand()) {
-      if (interaction.commandName === 'tictakto') {
-        await tictaktoCommand.execute(interaction);
+  discordClient.on(Events.InteractionCreate, async (interaction) => {
+    try {
+      if (interaction.isChatInputCommand()) {
+        if (interaction.commandName === 'tictakto') {
+          await tictaktoCommand.execute(interaction);
+          return;
+        }
+
+        if (interaction.commandName === 'redeem') {
+          await redeemCommand.execute(interaction);
+          return;
+        }
+
+        if (interaction.commandName === 'dashboard') {
+          await dashboardCommand.execute(interaction);
+        }
         return;
       }
 
-      if (interaction.commandName === 'redeem') {
-        await redeemCommand.execute(interaction);
+      if (interaction.isButton() && interaction.customId.startsWith('dash|')) {
+        await handleDashboardButton(interaction);
         return;
       }
 
-      if (interaction.commandName === 'dashboard') {
-        await dashboardCommand.execute(interaction);
+      if (interaction.isStringSelectMenu() && interaction.customId === 'dash|buy') {
+        await handleDashboardSelect(interaction);
+        return;
       }
-      return;
-    }
 
-    if (interaction.isButton() && interaction.customId.startsWith('dash|')) {
-      await handleDashboardButton(interaction);
-      return;
-    }
+      if (interaction.isButton() && interaction.customId.startsWith('ttt|')) {
+        await handleTttButton(interaction);
+      }
+    } catch (error) {
+      console.error('Interaction error:', error);
 
-    if (interaction.isStringSelectMenu() && interaction.customId === 'dash|buy') {
-      await handleDashboardSelect(interaction);
-      return;
-    }
+      const payload = {
+        content: '명령 처리 중 오류가 발생했습니다.',
+        ephemeral: true,
+      };
 
-    if (interaction.isButton() && interaction.customId.startsWith('ttt|')) {
-      await handleTttButton(interaction);
+      if (interaction.deferred || interaction.replied) {
+        await interaction.followUp(payload).catch(() => {});
+      } else {
+        await interaction.reply(payload).catch(() => {});
+      }
     }
+  });
+}
+
+function createClient() {
+  const discordClient = new Client({
+    intents: [GatewayIntentBits.Guilds],
+    rest: { timeout: 30_000 },
+  });
+
+  attachClientHandlers(discordClient);
+  return discordClient;
+}
+
+async function destroyClient() {
+  if (!client) return;
+  try {
+    await client.destroy();
   } catch (error) {
-    console.error('Interaction error:', error);
+    console.error('Client destroy error:', error.message);
+  }
+  client = null;
+}
 
-    const payload = {
-      content: '명령 처리 중 오류가 발생했습니다.',
-      ephemeral: true,
-    };
+async function connectDiscordLoop() {
+  let attempt = 0;
 
-    if (interaction.deferred || interaction.replied) {
-      await interaction.followUp(payload).catch(() => {});
-    } else {
-      await interaction.reply(payload).catch(() => {});
+  while (true) {
+    attempt += 1;
+
+    if (client?.isReady()) {
+      await sleep(30000);
+      continue;
+    }
+
+    await destroyClient();
+    client = createClient();
+
+    console.log(`Discord login attempt #${attempt}...`);
+
+    try {
+      await Promise.race([
+        client.login(token),
+        sleep(120_000).then(() => {
+          throw new Error('Discord login timeout (120s)');
+        }),
+      ]);
+
+      console.log('Discord login completed.');
+      await sleep(30000);
+    } catch (error) {
+      console.error(`Discord login failed (attempt #${attempt}):`, error.message);
+      await destroyClient();
+      await sleep(15_000);
     }
   }
-});
+}
 
 function startHealthServer() {
   const port = Number(process.env.PORT) || 3000;
 
   http
     .createServer((_req, res) => {
+      const ready = client?.isReady() ? 'online' : 'connecting';
       res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-      res.end('Discord bot is running');
+      res.end(`Discord bot is running (${ready})`);
     })
     .listen(port, () => {
       console.log(`Health server listening on port ${port}`);
@@ -152,24 +215,12 @@ function startKeepAlive() {
   setInterval(ping, 14 * 60 * 1000);
 }
 
-async function start() {
-  console.log('Connecting to Discord...');
-
-  const loginTimeoutMs = 60000;
-  await Promise.race([
-    client.login(token),
-    new Promise((_, reject) => {
-      setTimeout(
-        () => reject(new Error(`Discord login timeout (${loginTimeoutMs / 1000}s)`)),
-        loginTimeoutMs
-      );
-    }),
-  ]);
-
-  console.log('Discord login completed.');
-
+function start() {
   startHealthServer();
   startKeepAlive();
+  connectDiscordLoop().catch((error) => {
+    console.error('Discord connect loop crashed:', error);
+  });
 }
 
 process.on('unhandledRejection', (error) => {
@@ -180,7 +231,4 @@ process.on('uncaughtException', (error) => {
   console.error('Uncaught exception:', error);
 });
 
-start().catch((error) => {
-  console.error('Failed to start bot:', error);
-  process.exit(1);
-});
+start();
