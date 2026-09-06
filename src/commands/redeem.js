@@ -1,0 +1,65 @@
+const { SlashCommandBuilder } = require('discord.js');
+const {
+  redeemKey,
+  getPurchaseChannelId,
+  getPurchaseMessage,
+} = require('../utils/githubKeys');
+
+const redeemCommand = {
+  data: new SlashCommandBuilder()
+    .setName('redeem')
+    .setDescription('구매 키를 사용합니다.')
+    .addStringOption((option) =>
+      option.setName('키').setDescription('사용할 키').setRequired(true)
+    ),
+
+  async execute(interaction) {
+    const key = interaction.options.getString('키', true);
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+      const result = await redeemKey(key);
+
+      if (result.status === 'used') {
+        await interaction.editReply({ content: '이미 쓰인 키입니다.' });
+        return;
+      }
+
+      if (result.status === 'invalid') {
+        await interaction.editReply({ content: '유효한 키가 아닙니다.' });
+        return;
+      }
+
+      const displayName =
+        interaction.member?.displayName ||
+        interaction.user.globalName ||
+        interaction.user.username;
+
+      const channelId = getPurchaseChannelId(result.type);
+      const channel = await interaction.client.channels.fetch(channelId);
+
+      if (channel?.isTextBased()) {
+        await channel.send(getPurchaseMessage(displayName, result.type));
+      }
+
+      try {
+        await interaction.user.send('대기열에 추가 되었습니다.');
+      } catch {
+        await interaction.editReply({
+          content:
+            '키 사용은 완료되었지만 DM을 보낼 수 없습니다. Discord 설정에서 DM을 허용해 주세요.',
+        });
+        return;
+      }
+
+      await interaction.editReply({ content: '키가 성공적으로 사용되었습니다.' });
+    } catch (error) {
+      console.error('[redeem] error:', error);
+      await interaction.editReply({
+        content: '키 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.',
+      });
+    }
+  },
+};
+
+module.exports = { redeemCommand };
