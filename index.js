@@ -32,8 +32,13 @@ async function registerCommands() {
   console.log('Slash commands registered.');
 }
 
-client.once(Events.ClientReady, (readyClient) => {
+client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
+  try {
+    await registerCommands();
+  } catch (error) {
+    console.error('Slash command registration failed:', error);
+  }
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -82,11 +87,36 @@ function startHealthServer() {
     });
 }
 
+function startKeepAlive() {
+  const url = process.env.RENDER_EXTERNAL_URL;
+  if (!url) {
+    console.log('Keep-alive skipped (RENDER_EXTERNAL_URL not set)');
+    return;
+  }
+
+  const ping = () => {
+    fetch(url)
+      .then(() => console.log('Keep-alive ping ok'))
+      .catch((error) => console.error('Keep-alive ping failed:', error.message));
+  };
+
+  ping();
+  setInterval(ping, 14 * 60 * 1000);
+}
+
 async function start() {
   startHealthServer();
-  await registerCommands();
+  startKeepAlive();
   await client.login(token);
 }
+
+process.on('unhandledRejection', (error) => {
+  console.error('Unhandled rejection:', error);
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught exception:', error);
+});
 
 start().catch((error) => {
   console.error('Failed to start bot:', error);

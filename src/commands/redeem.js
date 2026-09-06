@@ -40,10 +40,11 @@ const redeemCommand = {
         await channel.send(getPurchaseMessage(username, result.type));
       }
 
-      if (interaction.inGuild() && interaction.member) {
+      if (interaction.inGuild() && interaction.guild) {
         const roleId = getPurchaseRoleId(result.type);
         try {
-          await interaction.member.roles.add(roleId);
+          const member = await interaction.guild.members.fetch(interaction.user.id);
+          await member.roles.add(roleId);
         } catch (roleError) {
           console.error('[redeem] role assign error:', roleError);
           await interaction.editReply({
