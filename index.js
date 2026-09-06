@@ -50,6 +50,7 @@ const commands = [
 /** @type {Client | null} */
 let client = null;
 let commandsRegistered = false;
+let discordLoginStarted = false;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -59,9 +60,18 @@ async function registerCommands() {
   if (commandsRegistered) return;
 
   const rest = new REST({ version: '10' }).setToken(token);
+  rest.on('rateLimited', (info) => {
+    console.warn(
+      `Discord REST rate limited: route=${info.route}, retryAfter=${info.retryAfter}ms`
+    );
+  });
+
+  console.log('Registering slash commands...');
   await rest.put(Routes.applicationCommands(clientId), { body: commands });
   commandsRegistered = true;
-  console.log('Slash commands registered.');
+  console.log(
+    `Slash commands registered: ${commands.map((command) => command.name).join(', ')}`
+  );
 }
 
 function attachClientHandlers(discordClient) {
@@ -81,13 +91,8 @@ function attachClientHandlers(discordClient) {
     console.error(`Shard ${shardId} error:`, error);
   });
 
-  discordClient.once(Events.ClientReady, async (readyClient) => {
+  discordClient.once(Events.ClientReady, (readyClient) => {
     console.log(`Logged in as ${readyClient.user.tag}`);
-    try {
-      await registerCommands();
-    } catch (error) {
-      console.error('Slash command registration failed:', error);
-    }
   });
 
   discordClient.on(Events.InteractionCreate, async (interaction) => {
@@ -160,36 +165,25 @@ async function destroyClient() {
 }
 
 async function connectDiscordLoop() {
-  let attempt = 0;
+  if (discordLoginStarted) return;
+  discordLoginStarted = true;
 
-  while (true) {
-    attempt += 1;
+  client = createClient();
+  console.log('Connecting to Discord Gateway (waiting through rate limits)...');
 
-    if (client?.isReady()) {
-      await sleep(30000);
-      continue;
-    }
-
+  try {
+    await client.login(token);
+    console.log('Discord login completed.');
+  } catch (error) {
+    console.error('Discord login failed:', error);
+    discordLoginStarted = false;
     await destroyClient();
-    client = createClient();
 
-    console.log(`Discord login attempt #${attempt}...`);
-
-    try {
-      await Promise.race([
-        client.login(token),
-        sleep(120_000).then(() => {
-          throw new Error('Discord login timeout (120s)');
-        }),
-      ]);
-
-      console.log('Discord login completed.');
-      await sleep(30000);
-    } catch (error) {
-      console.error(`Discord login failed (attempt #${attempt}):`, error.message);
-      await destroyClient();
-      await sleep(15_000);
-    }
+    console.log('Retrying Discord login in 30 seconds...');
+    await sleep(30_000);
+    connectDiscordLoop().catch((retryError) => {
+      console.error('Discord reconnect failed:', retryError);
+    });
   }
 }
 
@@ -224,9 +218,26 @@ function startKeepAlive() {
   setInterval(ping, 14 * 60 * 1000);
 }
 
+async function registerCommandsWithRetry() {
+  try {
+    await registerCommands();
+  } catch (error) {
+    console.error('Slash command registration failed:', error);
+    console.log('Retrying slash command registration in 60 seconds...');
+    setTimeout(() => {
+      registerCommandsWithRetry().catch((retryError) => {
+        console.error('Slash command registration retry crashed:', retryError);
+      });
+    }, 60_000);
+  }
+}
+
 function start() {
   startHealthServer();
   startKeepAlive();
+  registerCommandsWithRetry().catch((error) => {
+    console.error('Slash command registration crashed:', error);
+  });
   connectDiscordLoop().catch((error) => {
     console.error('Discord connect loop crashed:', error);
   });
