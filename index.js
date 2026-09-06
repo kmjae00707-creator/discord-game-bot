@@ -59,7 +59,6 @@ async function registerCommands() {
   const rest = new REST({
     version: '10',
     timeout: 30_000,
-    rejectOnRateLimit: () => true,
   }).setToken(token);
   rest.on('rateLimited', (info) => {
     console.warn(
@@ -148,11 +147,36 @@ function attachClientHandlers(discordClient) {
 function createClient() {
   const discordClient = new Client({
     intents: [GatewayIntentBits.Guilds],
+    shards: [0],
+    shardCount: 1,
     rest: {
       timeout: 30_000,
-      rejectOnRateLimit: () => true,
     },
   });
+
+  // Render의 공유 IP는 Discord /gateway/bot 전역 제한에 걸릴 수 있습니다.
+  // 이 봇은 단일 샤드이므로 Render에서 해당 조회만 안전한 고정 정보로 대체합니다.
+  if (process.env.RENDER_EXTERNAL_URL) {
+    const originalGet = discordClient.rest.get.bind(discordClient.rest);
+
+    discordClient.rest.get = (route, options) => {
+      if (route === Routes.gatewayBot()) {
+        console.log('Using single-shard Discord Gateway configuration on Render.');
+        return Promise.resolve({
+          url: 'wss://gateway.discord.gg',
+          shards: 1,
+          session_start_limit: {
+            total: 1_000,
+            remaining: 1_000,
+            reset_after: 5_000,
+            max_concurrency: 1,
+          },
+        });
+      }
+
+      return originalGet(route, options);
+    };
+  }
 
   attachClientHandlers(discordClient);
   return discordClient;
