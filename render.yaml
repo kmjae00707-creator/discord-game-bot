@@ -8,11 +8,3 @@ services:
     envVars:
       - key: DISCORD_TOKEN
         sync: false
-      - key: DISCORD_CLIENT_ID
-        sync: false
-      - key: GITHUB_TOKEN
-        sync: false
-      - key: GITHUB_OWNER
-        sync: false
-      - key: GITHUB_REPO
-        sync: false

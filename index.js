@@ -15,18 +15,27 @@ const {
 const { tictaktoCommand, handleTttButton } = require('./src/commands/tictakto');
 const { redeemCommand } = require('./src/commands/redeem');
 const { dashboardCommand } = require('./src/commands/dashboard');
-const {
-  handleDashboardButton,
-  handleDashboardSelect,
-} = require('./src/handlers/dashboardHandler');
+const { handleDashboardButton, handleDashboardSelect } = require('./src/handlers/dashboardHandler');
+
+function getClientIdFromToken(botToken) {
+  try {
+    return Buffer.from(botToken.split('.')[0], 'base64').toString('utf8');
+  } catch {
+    return null;
+  }
+}
 
 const token = process.env.DISCORD_TOKEN?.trim();
-const clientId = process.env.DISCORD_CLIENT_ID?.trim();
+const clientId =
+  process.env.DISCORD_CLIENT_ID?.trim() || (token ? getClientIdFromToken(token) : null);
 
-if (!token || !clientId) {
-  console.error('DISCORD_TOKEN과 DISCORD_CLIENT_ID 환경 변수가 필요합니다.');
-  console.error(`DISCORD_TOKEN: ${token ? 'set' : 'missing'}`);
-  console.error(`DISCORD_CLIENT_ID: ${clientId ? 'set' : 'missing'}`);
+if (!token) {
+  console.error('DISCORD_TOKEN 환경 변수가 필요합니다.');
+  process.exit(1);
+}
+
+if (!clientId) {
+  console.error('DISCORD_CLIENT_ID를 찾을 수 없습니다. 토큰을 확인해 주세요.');
   process.exit(1);
 }
 
