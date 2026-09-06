@@ -11,6 +11,11 @@ const {
 
 const { tictaktoCommand, handleTttButton } = require('./src/commands/tictakto');
 const { redeemCommand } = require('./src/commands/redeem');
+const { dashboardCommand } = require('./src/commands/dashboard');
+const {
+  handleDashboardButton,
+  handleDashboardSelect,
+} = require('./src/handlers/dashboardHandler');
 
 const token = process.env.DISCORD_TOKEN;
 const clientId = process.env.DISCORD_CLIENT_ID;
@@ -20,7 +25,11 @@ if (!token || !clientId) {
   process.exit(1);
 }
 
-const commands = [tictaktoCommand.data.toJSON(), redeemCommand.data.toJSON()];
+const commands = [
+  tictaktoCommand.data.toJSON(),
+  redeemCommand.data.toJSON(),
+  dashboardCommand.data.toJSON(),
+];
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
@@ -51,7 +60,22 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       if (interaction.commandName === 'redeem') {
         await redeemCommand.execute(interaction);
+        return;
       }
+
+      if (interaction.commandName === 'dashboard') {
+        await dashboardCommand.execute(interaction);
+      }
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('dash|')) {
+      await handleDashboardButton(interaction);
+      return;
+    }
+
+    if (interaction.isStringSelectMenu() && interaction.customId === 'dash|buy') {
+      await handleDashboardSelect(interaction);
       return;
     }
 
