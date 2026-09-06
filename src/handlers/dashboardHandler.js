@@ -36,6 +36,11 @@ async function handleDashboardButton(interaction) {
 
   if (action === 'close') {
     await handleCloseRechargeChannel(interaction);
+    return;
+  }
+
+  if (action === 'delete') {
+    await handleDeleteRechargeChannel(interaction);
   }
 }
 
@@ -171,6 +176,11 @@ async function handleRecharge(interaction) {
         .setCustomId(`dash|close|${interaction.user.id}`)
         .setLabel('닫기')
         .setEmoji('🔒')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`dash|delete|${interaction.user.id}`)
+        .setLabel('채널 삭제')
+        .setEmoji('🗑️')
         .setStyle(ButtonStyle.Danger)
     );
 
@@ -213,14 +223,45 @@ async function handleCloseRechargeChannel(interaction) {
   }
 
   await deferEphemeral(interaction);
+
+  try {
+    await interaction.channel.permissionOverwrites.delete(
+      ownerId,
+      `충전 문의 닫기: ${interaction.user.tag}`
+    );
+    await interaction.editReply({
+      content: '충전 채널 접근 권한이 제거되었습니다.',
+    });
+  } catch (error) {
+    console.error('[dashboard] close channel error:', error);
+    await interaction.editReply({
+      content: '채널을 닫지 못했습니다. 관리자에게 문의해 주세요.',
+    });
+  }
+}
+
+async function handleDeleteRechargeChannel(interaction) {
+  const isAdministrator = interaction.memberPermissions?.has(
+    PermissionFlagsBits.Administrator
+  );
+
+  if (!isAdministrator) {
+    await deferEphemeral(interaction);
+    await interaction.editReply({
+      content: '관리자만 충전 채널을 삭제할 수 있습니다.',
+    });
+    return;
+  }
+
+  await deferEphemeral(interaction);
   await interaction.editReply({
-    content: '충전 채널을 닫습니다.',
+    content: '충전 채널을 삭제합니다.',
   });
 
   setTimeout(() => {
     interaction.channel
-      ?.delete(`충전 문의 종료: ${interaction.user.tag}`)
-      .catch((error) => console.error('[dashboard] close channel error:', error));
+      ?.delete(`관리자 채널 삭제: ${interaction.user.tag}`)
+      .catch((error) => console.error('[dashboard] delete channel error:', error));
   }, 1_500);
 }
 
