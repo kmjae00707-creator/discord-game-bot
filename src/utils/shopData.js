@@ -7,6 +7,12 @@ const KEY_PLACEHOLDER_PATTERN = /\{(cotvkey|rtkey)\}/g;
 
 let purchaseQueue = Promise.resolve();
 
+function enqueueBalanceMutation(operation) {
+  const result = purchaseQueue.then(operation);
+  purchaseQueue = result.catch(() => {});
+  return result;
+}
+
 function parseShop(content) {
   return content
     .split(/\r?\n/)
@@ -188,13 +194,64 @@ async function executePurchase(userId, productId) {
 }
 
 function purchaseProduct(userId, productId) {
-  const purchase = purchaseQueue.then(() => executePurchase(userId, productId));
-  purchaseQueue = purchase.catch(() => {});
-  return purchase;
+  return enqueueBalanceMutation(() => executePurchase(userId, productId));
+}
+
+async function executeBalanceUpdate(userId, operation, amount = 0) {
+  const file = await readDataFile(BALANCE_FILE);
+  const balances = parseBalances(file.content);
+  const previousBalance = balances.get(userId) || 0;
+  let balance;
+
+  switch (operation) {
+    case 'add':
+      balance = previousBalance + amount;
+      balances.set(userId, balance);
+      break;
+    case 'remove':
+      balance = Math.max(0, previousBalance - amount);
+      balances.set(userId, balance);
+      break;
+    case 'set':
+      balance = amount;
+      balances.set(userId, balance);
+      break;
+    case 'clear':
+      balance = 0;
+      balances.delete(userId);
+      break;
+    default:
+      throw new Error(`Unsupported balance operation: ${operation}`);
+  }
+
+  await writeDataFiles(
+    [{ filename: BALANCE_FILE, content: balancesToContent(balances) }],
+    `balance: ${operation} ${userId} (${previousBalance} -> ${balance})`
+  );
+
+  return { previousBalance, balance };
+}
+
+function updateBalance(userId, operation, amount) {
+  if (!['add', 'remove', 'set', 'clear'].includes(operation)) {
+    throw new Error('유효하지 않은 잔액 작업입니다.');
+  }
+
+  if (
+    operation !== 'clear' &&
+    (!Number.isSafeInteger(amount) || amount < 0)
+  ) {
+    throw new Error('금액은 0 이상의 안전한 정수여야 합니다.');
+  }
+
+  return enqueueBalanceMutation(() =>
+    executeBalanceUpdate(userId, operation, amount)
+  );
 }
 
 module.exports = {
   getProducts,
   getBalance,
   purchaseProduct,
+  updateBalance,
 };

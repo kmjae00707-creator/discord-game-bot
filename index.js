@@ -12,6 +12,7 @@ const {
 const { tictaktoCommand, handleTttButton } = require('./src/commands/tictakto');
 const { redeemCommand } = require('./src/commands/redeem');
 const { dashboardCommand } = require('./src/commands/dashboard');
+const { balanceCommand } = require('./src/commands/balance');
 const { handleDashboardButton, handleDashboardSelect } = require('./src/handlers/dashboardHandler');
 
 function getClientIdFromToken(botToken) {
@@ -42,6 +43,7 @@ const commands = [
   tictaktoCommand.data.toJSON(),
   redeemCommand.data.toJSON(),
   dashboardCommand.data.toJSON(),
+  balanceCommand.data.toJSON(),
 ];
 
 /** @type {Client | null} */
@@ -110,6 +112,11 @@ function attachClientHandlers(discordClient) {
 
         if (interaction.commandName === 'dashboard') {
           await dashboardCommand.execute(interaction);
+          return;
+        }
+
+        if (interaction.commandName === 'balance') {
+          await balanceCommand.execute(interaction);
         }
         return;
       }
@@ -264,12 +271,12 @@ function start() {
   startHealthServer();
   startKeepAlive();
 
-  if (process.env.REGISTER_COMMANDS === 'true') {
+  if (process.env.REGISTER_COMMANDS !== 'false') {
     registerCommandsWithRetry().catch((error) => {
       console.error('Slash command registration crashed:', error);
     });
   } else {
-    console.log('Slash command registration skipped (already registered).');
+    console.log('Slash command registration disabled by REGISTER_COMMANDS=false.');
   }
 
   connectDiscordLoop().catch((error) => {
