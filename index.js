@@ -263,9 +263,15 @@ async function registerCommandsWithRetry() {
 function start() {
   startHealthServer();
   startKeepAlive();
-  registerCommandsWithRetry().catch((error) => {
-    console.error('Slash command registration crashed:', error);
-  });
+
+  if (process.env.REGISTER_COMMANDS === 'true') {
+    registerCommandsWithRetry().catch((error) => {
+      console.error('Slash command registration crashed:', error);
+    });
+  } else {
+    console.log('Slash command registration skipped (already registered).');
+  }
+
   connectDiscordLoop().catch((error) => {
     console.error('Discord connect loop crashed:', error);
   });

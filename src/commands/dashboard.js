@@ -5,6 +5,7 @@ const {
   ButtonBuilder,
   ButtonStyle,
 } = require('discord.js');
+const { replyEphemeral } = require('../utils/interactionResponse');
 
 const RECHARGE_CATEGORY_ID = '1533500110087131327';
 
@@ -45,10 +46,7 @@ const dashboardCommand = {
         .setStyle(ButtonStyle.Primary)
     );
 
-    await interaction.reply({
-      content: '대시보드를 게시했습니다.',
-      ephemeral: true,
-    });
+    await replyEphemeral(interaction, '대시보드를 게시했습니다.');
 
     await interaction.channel.send({
       embeds: [embed],

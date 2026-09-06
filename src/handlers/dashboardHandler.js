@@ -6,6 +6,7 @@ const {
 } = require('discord.js');
 const { RECHARGE_CATEGORY_ID } = require('../commands/dashboard');
 const { getProducts, getBalance, purchaseProduct } = require('../utils/shopData');
+const { deferEphemeral } = require('../utils/interactionResponse');
 
 async function handleDashboardButton(interaction) {
   const action = interaction.customId.split('|')[1];
@@ -34,7 +35,7 @@ async function handleDashboardSelect(interaction) {
   if (interaction.customId !== 'dash|buy') return;
 
   const productId = interaction.values[0];
-  await interaction.deferReply({ ephemeral: true });
+  await deferEphemeral(interaction);
 
   try {
     const result = await purchaseProduct(interaction.user.id, productId);
@@ -80,7 +81,7 @@ async function handleDashboardSelect(interaction) {
 }
 
 async function handleProducts(interaction) {
-  await interaction.deferReply({ ephemeral: true });
+  await deferEphemeral(interaction);
 
   try {
     const { products } = await getProducts();
@@ -115,7 +116,7 @@ async function handleRecharge(interaction) {
     return;
   }
 
-  await interaction.deferReply({ ephemeral: true });
+  await deferEphemeral(interaction);
 
   try {
     const username = interaction.user.username.replace(/[^a-zA-Z0-9-_]/g, '').slice(0, 20);
@@ -168,7 +169,7 @@ async function handleRecharge(interaction) {
 }
 
 async function handleInfo(interaction) {
-  await interaction.deferReply({ ephemeral: true });
+  await deferEphemeral(interaction);
 
   try {
     const { amount } = await getBalance(interaction.user.id);
@@ -182,7 +183,7 @@ async function handleInfo(interaction) {
 }
 
 async function handlePurchaseMenu(interaction) {
-  await interaction.deferReply({ ephemeral: true });
+  await deferEphemeral(interaction);
 
   try {
     const { products } = await getProducts();
