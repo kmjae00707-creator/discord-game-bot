@@ -182,13 +182,14 @@ async function handleInfo(interaction) {
 }
 
 async function handlePurchaseMenu(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+
   try {
     const { products } = await getProducts();
 
     if (products.length === 0) {
-      await interaction.reply({
+      await interaction.editReply({
         content: '등록된 제품이 없습니다.',
-        ephemeral: true,
       });
       return;
     }
@@ -206,16 +207,14 @@ async function handlePurchaseMenu(interaction) {
 
     const row = new ActionRowBuilder().addComponents(menu);
 
-    await interaction.reply({
+    await interaction.editReply({
       content: '구매할 제품을 선택해 주세요.',
       components: [row],
-      ephemeral: true,
     });
   } catch (error) {
     console.error('[dashboard] purchase menu error:', error);
-    await interaction.reply({
+    await interaction.editReply({
       content: '제품 목록을 불러오지 못했습니다.',
-      ephemeral: true,
     });
   }
 }
