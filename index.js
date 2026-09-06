@@ -1,8 +1,5 @@
 require('dotenv').config();
 
-const dns = require('dns');
-dns.setDefaultResultOrder('ipv4first');
-
 const http = require('http');
 const {
   Client,
@@ -59,7 +56,11 @@ function sleep(ms) {
 async function registerCommands() {
   if (commandsRegistered) return;
 
-  const rest = new REST({ version: '10' }).setToken(token);
+  const rest = new REST({
+    version: '10',
+    timeout: 30_000,
+    rejectOnRateLimit: () => true,
+  }).setToken(token);
   rest.on('rateLimited', (info) => {
     console.warn(
       `Discord REST rate limited: route=${info.route}, retryAfter=${info.retryAfter}ms`
@@ -147,7 +148,10 @@ function attachClientHandlers(discordClient) {
 function createClient() {
   const discordClient = new Client({
     intents: [GatewayIntentBits.Guilds],
-    rest: { timeout: 30_000 },
+    rest: {
+      timeout: 30_000,
+      rejectOnRateLimit: () => true,
+    },
   });
 
   attachClientHandlers(discordClient);
