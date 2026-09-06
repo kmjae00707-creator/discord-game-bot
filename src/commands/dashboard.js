@@ -1,6 +1,5 @@
 const {
   SlashCommandBuilder,
-  PermissionFlagsBits,
   EmbedBuilder,
   ActionRowBuilder,
   ButtonBuilder,
@@ -13,7 +12,7 @@ const dashboardCommand = {
   data: new SlashCommandBuilder()
     .setName('dashboard')
     .setDescription('자동충전/구매 대시보드를 게시합니다.')
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+    .setDMPermission(false),
 
   async execute(interaction) {
     const embed = new EmbedBuilder()
