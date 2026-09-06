@@ -1,7 +1,11 @@
-const { readDataFile, writeDataFile } = require('./dataStore');
+const { readDataFile, writeDataFiles } = require('./dataStore');
 
 const SHOP_FILE = 'shop';
 const BALANCE_FILE = 'balance';
+const USED_KEY_FILE = 'usedkey';
+const KEY_PLACEHOLDER_PATTERN = /\{(cotvkey|rtkey)\}/g;
+
+let purchaseQueue = Promise.resolve();
 
 function parseShop(content) {
   return content
@@ -72,7 +76,36 @@ async function getBalance(userId) {
   };
 }
 
-async function purchaseProduct(userId, productId) {
+function getAvailableKey(content) {
+  return (
+    content
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => line && !line.startsWith('#')) || null
+  );
+}
+
+function removeKey(content, key) {
+  let removed = false;
+  return content
+    .split(/\r?\n/)
+    .filter((line) => {
+      if (!removed && line.trim() === key) {
+        removed = true;
+        return false;
+      }
+      return true;
+    })
+    .join('\n')
+    .replace(/\n*$/, '\n');
+}
+
+function appendUsedKeys(content, keys) {
+  const base = content.replace(/\s*$/, '');
+  return `${base ? `${base}\n` : ''}${keys.join('\n')}\n`;
+}
+
+async function executePurchase(userId, productId) {
   const { products } = await getProducts();
   const product = products.find((item) => item.id === productId);
 
@@ -80,8 +113,8 @@ async function purchaseProduct(userId, productId) {
     return { status: 'not_found' };
   }
 
-  const file = await readDataFile(BALANCE_FILE);
-  const balances = parseBalances(file.content);
+  const balanceFile = await readDataFile(BALANCE_FILE);
+  const balances = parseBalances(balanceFile.content);
   const current = balances.get(userId) || 0;
 
   if (current < product.price) {
@@ -92,20 +125,72 @@ async function purchaseProduct(userId, productId) {
     };
   }
 
+  const requiredKeyFiles = [...new Set(
+    Array.from(product.content.matchAll(KEY_PLACEHOLDER_PATTERN), (match) => match[1])
+  )];
+  const keyFiles = new Map();
+  const selectedKeys = new Map();
+
+  for (const filename of requiredKeyFiles) {
+    const file = await readDataFile(filename);
+    const key = getAvailableKey(file.content);
+
+    if (!key) {
+      return { status: 'out_of_stock', product };
+    }
+
+    keyFiles.set(filename, file);
+    selectedKeys.set(filename, key);
+  }
+
   balances.set(userId, current - product.price);
 
-  await writeDataFile(
-    BALANCE_FILE,
-    balancesToContent(balances),
-    file.sha,
+  const updates = [
+    {
+      filename: BALANCE_FILE,
+      content: balancesToContent(balances),
+    },
+  ];
+
+  for (const [filename, file] of keyFiles) {
+    updates.push({
+      filename,
+      content: removeKey(file.content, selectedKeys.get(filename)),
+    });
+  }
+
+  if (selectedKeys.size > 0) {
+    const usedKeyFile = await readDataFile(USED_KEY_FILE);
+    updates.push({
+      filename: USED_KEY_FILE,
+      content: appendUsedKeys(usedKeyFile.content, [...selectedKeys.values()]),
+    });
+  }
+
+  await writeDataFiles(
+    updates,
     `purchase: ${userId} bought ${product.name}`
+  );
+
+  const deliveryContent = product.content.replace(
+    KEY_PLACEHOLDER_PATTERN,
+    (_placeholder, filename) => selectedKeys.get(filename)
   );
 
   return {
     status: 'success',
-    product,
+    product: {
+      ...product,
+      content: deliveryContent,
+    },
     balance: current - product.price,
   };
+}
+
+function purchaseProduct(userId, productId) {
+  const purchase = purchaseQueue.then(() => executePurchase(userId, productId));
+  purchaseQueue = purchase.catch(() => {});
+  return purchase;
 }
 
 module.exports = {

@@ -51,6 +51,13 @@ async function handleDashboardSelect(interaction) {
       return;
     }
 
+    if (result.status === 'out_of_stock') {
+      await interaction.editReply({
+        content: `**${result.product.name}** 제품이 품절되었습니다. 관리자에게 문의해 주세요.`,
+      });
+      return;
+    }
+
     try {
       await interaction.user.send(result.product.content);
     } catch {
