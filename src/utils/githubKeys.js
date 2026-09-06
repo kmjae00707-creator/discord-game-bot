@@ -14,6 +14,11 @@ const CHANNELS = {
   rt: '1540265091948224586',
 };
 
+const ROLES = {
+  cotv: '1539990567285555381',
+  rt: '1540297300092526592',
+};
+
 let octokit = null;
 
 function useGitHub() {
@@ -177,9 +182,14 @@ function getPurchaseMessage(displayName, type) {
   return `${displayName}님이 rt를 구매하였습니다`;
 }
 
+function getPurchaseRoleId(type) {
+  return ROLES[type];
+}
+
 module.exports = {
   redeemKey,
   getPurchaseChannelId,
   getPurchaseMessage,
+  getPurchaseRoleId,
   useGitHub,
 };

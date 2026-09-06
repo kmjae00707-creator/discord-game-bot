@@ -3,6 +3,7 @@ const {
   redeemKey,
   getPurchaseChannelId,
   getPurchaseMessage,
+  getPurchaseRoleId,
 } = require('../utils/githubKeys');
 
 const redeemCommand = {
@@ -30,16 +31,27 @@ const redeemCommand = {
         return;
       }
 
-      const displayName =
-        interaction.member?.displayName ||
-        interaction.user.globalName ||
-        interaction.user.username;
+      const username = interaction.user.username;
 
       const channelId = getPurchaseChannelId(result.type);
       const channel = await interaction.client.channels.fetch(channelId);
 
       if (channel?.isTextBased()) {
-        await channel.send(getPurchaseMessage(displayName, result.type));
+        await channel.send(getPurchaseMessage(username, result.type));
+      }
+
+      if (interaction.inGuild() && interaction.member) {
+        const roleId = getPurchaseRoleId(result.type);
+        try {
+          await interaction.member.roles.add(roleId);
+        } catch (roleError) {
+          console.error('[redeem] role assign error:', roleError);
+          await interaction.editReply({
+            content:
+              '키는 사용되었지만 역할 지급에 실패했습니다. 관리자에게 문의해 주세요.',
+          });
+          return;
+        }
       }
 
       try {
