@@ -1,5 +1,8 @@
 require('dotenv').config();
 
+const dns = require('dns');
+dns.setDefaultResultOrder('ipv4first');
+
 const http = require('http');
 const {
   Client,
@@ -37,6 +40,7 @@ const commands = [
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
+  rest: { timeout: 30_000 },
 });
 
 async function registerCommands() {
@@ -55,6 +59,10 @@ client.on(Events.Warn, (message) => {
 
 client.on(Events.ShardDisconnect, (event, shardId) => {
   console.error(`Shard ${shardId} disconnected:`, event.code, event.reason);
+});
+
+client.on(Events.ShardError, (error, shardId) => {
+  console.error(`Shard ${shardId} error:`, error);
 });
 
 client.once(Events.ClientReady, async (readyClient) => {
@@ -145,20 +153,23 @@ function startKeepAlive() {
 }
 
 async function start() {
-  startHealthServer();
-  startKeepAlive();
-
   console.log('Connecting to Discord...');
 
   const loginTimeoutMs = 60000;
   await Promise.race([
     client.login(token),
     new Promise((_, reject) => {
-      setTimeout(() => reject(new Error(`Discord login timeout (${loginTimeoutMs / 1000}s)`)), loginTimeoutMs);
+      setTimeout(
+        () => reject(new Error(`Discord login timeout (${loginTimeoutMs / 1000}s)`)),
+        loginTimeoutMs
+      );
     }),
   ]);
 
   console.log('Discord login completed.');
+
+  startHealthServer();
+  startKeepAlive();
 }
 
 process.on('unhandledRejection', (error) => {
