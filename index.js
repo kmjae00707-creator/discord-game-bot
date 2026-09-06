@@ -1,5 +1,6 @@
 require('dotenv').config();
 
+const http = require('http');
 const {
   Client,
   GatewayIntentBits,
@@ -68,7 +69,21 @@ client.on(Events.InteractionCreate, async (interaction) => {
   }
 });
 
+function startHealthServer() {
+  const port = Number(process.env.PORT) || 3000;
+
+  http
+    .createServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Discord bot is running');
+    })
+    .listen(port, () => {
+      console.log(`Health server listening on port ${port}`);
+    });
+}
+
 async function start() {
+  startHealthServer();
   await registerCommands();
   await client.login(token);
 }
