@@ -1,7 +1,10 @@
 const {
   ChannelType,
   PermissionFlagsBits,
+  EmbedBuilder,
   ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   StringSelectMenuBuilder,
 } = require('discord.js');
 const { RECHARGE_CATEGORY_ID } = require('../commands/dashboard');
@@ -28,6 +31,11 @@ async function handleDashboardButton(interaction) {
 
   if (action === 'purchase') {
     await handlePurchaseMenu(interaction);
+    return;
+  }
+
+  if (action === 'close') {
+    await handleCloseRechargeChannel(interaction);
   }
 }
 
@@ -94,12 +102,18 @@ async function handleProducts(interaction) {
     const list = products
       .map(
         (product, index) =>
-          `**${index + 1}. ${product.name}** — ${product.price.toLocaleString()}원`
+          `• **${index + 1}. ${product.name}** — ${product.price.toLocaleString()}원`
       )
       .join('\n');
 
+    const embed = new EmbedBuilder()
+      .setColor(0x5865f2)
+      .setTitle('제품 목록')
+      .setDescription(list)
+      .setFooter({ text: '구매 버튼에서 원하는 제품을 선택해 주세요.' });
+
     await interaction.editReply({
-      content: `**제품 목록**\n${list}`,
+      embeds: [embed],
     });
   } catch (error) {
     console.error('[dashboard] products error:', error);
@@ -152,9 +166,25 @@ async function handleRecharge(interaction) {
       reason: `충전 요청: ${interaction.user.tag}`,
     });
 
-    await channel.send(
-      `<@${interaction.user.id}> 충전 채널이 생성되었습니다.\n충전 요청 내용을 입력해 주세요.`
+    const closeRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`dash|close|${interaction.user.id}`)
+        .setLabel('닫기')
+        .setEmoji('🔒')
+        .setStyle(ButtonStyle.Danger)
     );
+
+    const rechargeEmbed = new EmbedBuilder()
+      .setColor(0x57f287)
+      .setTitle('충전 문의')
+      .setDescription(
+        `<@${interaction.user.id}> 충전 요청 내용을 입력해 주세요.\n문의가 끝나면 아래 **닫기** 버튼을 눌러주세요.`
+      );
+
+    await channel.send({
+      embeds: [rechargeEmbed],
+      components: [closeRow],
+    });
 
     await interaction.editReply({
       content: `충전 채널이 생성되었습니다: ${channel}`,
@@ -166,6 +196,32 @@ async function handleRecharge(interaction) {
         '충전 채널 생성에 실패했습니다. 봇 권한(채널 관리)과 카테고리 설정을 확인해 주세요.',
     });
   }
+}
+
+async function handleCloseRechargeChannel(interaction) {
+  const ownerId = interaction.customId.split('|')[2];
+  const canManageChannel = interaction.memberPermissions?.has(
+    PermissionFlagsBits.ManageChannels
+  );
+
+  if (interaction.user.id !== ownerId && !canManageChannel) {
+    await deferEphemeral(interaction);
+    await interaction.editReply({
+      content: '충전 채널을 만든 사용자 또는 관리자만 닫을 수 있습니다.',
+    });
+    return;
+  }
+
+  await deferEphemeral(interaction);
+  await interaction.editReply({
+    content: '충전 채널을 닫습니다.',
+  });
+
+  setTimeout(() => {
+    interaction.channel
+      ?.delete(`충전 문의 종료: ${interaction.user.tag}`)
+      .catch((error) => console.error('[dashboard] close channel error:', error));
+  }, 1_500);
 }
 
 async function handleInfo(interaction) {
