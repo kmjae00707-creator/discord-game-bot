@@ -17,13 +17,17 @@ const {
   handleDashboardSelect,
 } = require('./src/handlers/dashboardHandler');
 
-const token = process.env.DISCORD_TOKEN;
-const clientId = process.env.DISCORD_CLIENT_ID;
+const token = process.env.DISCORD_TOKEN?.trim();
+const clientId = process.env.DISCORD_CLIENT_ID?.trim();
 
 if (!token || !clientId) {
   console.error('DISCORD_TOKEN과 DISCORD_CLIENT_ID 환경 변수가 필요합니다.');
+  console.error(`DISCORD_TOKEN: ${token ? 'set' : 'missing'}`);
+  console.error(`DISCORD_CLIENT_ID: ${clientId ? 'set' : 'missing'}`);
   process.exit(1);
 }
+
+console.log(`Starting bot (clientId: ${clientId}, token length: ${token.length})`);
 
 const commands = [
   tictaktoCommand.data.toJSON(),
@@ -40,6 +44,18 @@ async function registerCommands() {
   await rest.put(Routes.applicationCommands(clientId), { body: commands });
   console.log('Slash commands registered.');
 }
+
+client.on(Events.Error, (error) => {
+  console.error('Discord client error:', error);
+});
+
+client.on(Events.Warn, (message) => {
+  console.warn('Discord client warn:', message);
+});
+
+client.on(Events.ShardDisconnect, (event, shardId) => {
+  console.error(`Shard ${shardId} disconnected:`, event.code, event.reason);
+});
 
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
@@ -131,7 +147,18 @@ function startKeepAlive() {
 async function start() {
   startHealthServer();
   startKeepAlive();
-  await client.login(token);
+
+  console.log('Connecting to Discord...');
+
+  const loginTimeoutMs = 60000;
+  await Promise.race([
+    client.login(token),
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error(`Discord login timeout (${loginTimeoutMs / 1000}s)`)), loginTimeoutMs);
+    }),
+  ]);
+
+  console.log('Discord login completed.');
 }
 
 process.on('unhandledRejection', (error) => {
