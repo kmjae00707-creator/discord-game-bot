@@ -13,7 +13,13 @@ const { tictaktoCommand, handleTttButton } = require('./src/commands/tictakto');
 const { redeemCommand } = require('./src/commands/redeem');
 const { dashboardCommand } = require('./src/commands/dashboard');
 const { balanceCommand } = require('./src/commands/balance');
-const { handleDashboardButton, handleDashboardSelect } = require('./src/handlers/dashboardHandler');
+const {
+  handleDashboardButton,
+  handleDashboardSelect,
+  handleChargeModalSubmit,
+  CHARGE_MODAL_ID,
+} = require('./src/handlers/dashboardHandler');
+const { processDeposit } = require('./src/handlers/depositHandler');
 
 function getClientIdFromToken(botToken) {
   try {
@@ -131,6 +137,11 @@ function attachClientHandlers(discordClient) {
         return;
       }
 
+      if (interaction.isModalSubmit() && interaction.customId === CHARGE_MODAL_ID) {
+        await handleChargeModalSubmit(interaction);
+        return;
+      }
+
       if (interaction.isButton() && interaction.customId.startsWith('ttt|')) {
         await handleTttButton(interaction);
       }
@@ -222,11 +233,90 @@ async function connectDiscordLoop() {
   }
 }
 
+function readRequestBody(req, limitBytes = 16 * 1024) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > limitBytes) {
+        reject(new Error('payload_too_large'));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', reject);
+  });
+}
+
+function sendJson(res, statusCode, payload) {
+  res.writeHead(statusCode, { 'Content-Type': 'application/json; charset=utf-8' });
+  res.end(JSON.stringify(payload));
+}
+
+async function handleDepositRequest(req, res) {
+  const secret = process.env.DEPOSIT_SECRET?.trim();
+
+  if (!secret) {
+    sendJson(res, 503, { ok: false, error: 'deposit_secret_not_configured' });
+    return;
+  }
+
+  const provided = (req.headers['x-deposit-secret'] || '').toString().trim();
+  if (provided !== secret) {
+    sendJson(res, 401, { ok: false, error: 'unauthorized' });
+    return;
+  }
+
+  let raw;
+  try {
+    raw = await readRequestBody(req);
+  } catch (error) {
+    sendJson(res, 413, { ok: false, error: error.message });
+    return;
+  }
+
+  let body = raw;
+  const contentType = (req.headers['content-type'] || '').toString();
+  if (contentType.includes('application/json')) {
+    try {
+      body = JSON.parse(raw);
+    } catch {
+      sendJson(res, 400, { ok: false, error: 'invalid_json' });
+      return;
+    }
+  }
+
+  try {
+    const result = await processDeposit(client, body);
+    const statusCode = result.ok ? 200 : 422;
+    sendJson(res, statusCode, result);
+  } catch (error) {
+    console.error('[deposit] webhook error:', error);
+    sendJson(res, 500, { ok: false, error: 'internal_error' });
+  }
+}
+
 function startHealthServer() {
   const port = Number(process.env.PORT) || 3000;
 
   http
-    .createServer((_req, res) => {
+    .createServer((req, res) => {
+      const url = (req.url || '/').split('?')[0];
+
+      if (req.method === 'POST' && url === '/deposit') {
+        handleDepositRequest(req, res).catch((error) => {
+          console.error('[deposit] unhandled webhook error:', error);
+          if (!res.headersSent) {
+            sendJson(res, 500, { ok: false, error: 'internal_error' });
+          }
+        });
+        return;
+      }
+
       const ready = client?.isReady() ? 'online' : 'connecting';
       res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end(`Discord bot is running (${ready})`);

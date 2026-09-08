@@ -42,7 +42,21 @@ async function replyEphemeral(interaction, content) {
   interaction.replied = true;
 }
 
+/**
+ * 상호작용에 대한 첫 응답으로 모달(입력 창)을 띄웁니다.
+ * @param {import('discord.js').BaseInteraction} interaction
+ * @param {object} modalData 모달 payload(data.custom_id, data.title, data.components)
+ */
+async function showModal(interaction, modalData) {
+  await sendCallback(interaction, {
+    type: 9,
+    data: modalData,
+  });
+  interaction.replied = true;
+}
+
 module.exports = {
   deferEphemeral,
   replyEphemeral,
+  showModal,
 };

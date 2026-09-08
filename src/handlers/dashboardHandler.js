@@ -9,7 +9,19 @@ const {
 } = require('discord.js');
 const { RECHARGE_CATEGORY_ID } = require('../commands/dashboard');
 const { getProducts, getBalance, purchaseProduct } = require('../utils/shopData');
-const { deferEphemeral } = require('../utils/interactionResponse');
+const {
+  deferEphemeral,
+  showModal,
+} = require('../utils/interactionResponse');
+const { createRequest, REQUEST_TTL_MS } = require('../utils/depositRequests');
+
+// 입금 계좌 안내 문구 (환경 변수로 관리, 미설정 시 기본 안내)
+const DEPOSIT_ACCOUNT_INFO =
+  process.env.DEPOSIT_ACCOUNT_INFO?.trim() ||
+  '입금 계좌 정보가 아직 설정되지 않았습니다. 관리자에게 문의해 주세요.';
+
+const CHARGE_MODAL_ID = 'dash|charge-modal';
+const CHARGE_AMOUNT_INPUT_ID = 'amount';
 
 async function handleDashboardButton(interaction) {
   const action = interaction.customId.split('|')[1];
@@ -20,7 +32,7 @@ async function handleDashboardButton(interaction) {
   }
 
   if (action === 'recharge') {
-    await handleRecharge(interaction);
+    await handleRechargeModal(interaction);
     return;
   }
 
@@ -126,86 +138,141 @@ async function handleProducts(interaction) {
   }
 }
 
-async function handleRecharge(interaction) {
-  if (!interaction.inGuild() || !interaction.guild) {
-    await interaction.reply({
-      content: '서버에서만 충전 채널을 생성할 수 있습니다.',
-      ephemeral: true,
+/**
+ * 충전 카테고리 안에 문의/티켓용 채널을 생성합니다.
+ * allowUserId가 있으면 해당 유저만, 없으면 관리자(+봇)만 볼 수 있습니다.
+ * @param {import('discord.js').Guild} guild
+ * @param {{ name: string, allowUserId?: string | null, reason?: string }} options
+ */
+async function createRechargeChannel(guild, { name, allowUserId = null, reason }) {
+  const permissionOverwrites = [
+    {
+      id: guild.id,
+      deny: [PermissionFlagsBits.ViewChannel],
+    },
+    {
+      id: guild.client.user.id,
+      allow: [
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.ReadMessageHistory,
+        PermissionFlagsBits.ManageChannels,
+      ],
+    },
+  ];
+
+  if (allowUserId) {
+    permissionOverwrites.push({
+      id: allowUserId,
+      allow: [
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.ReadMessageHistory,
+      ],
+    });
+  }
+
+  return guild.channels.create({
+    name,
+    type: ChannelType.GuildText,
+    parent: RECHARGE_CATEGORY_ID,
+    permissionOverwrites,
+    reason,
+  });
+}
+
+/**
+ * 충전 버튼 → 금액 입력 모달을 띄웁니다.
+ */
+async function handleRechargeModal(interaction) {
+  if (!interaction.inGuild()) {
+    await deferEphemeral(interaction);
+    await interaction.editReply({
+      content: '서버에서만 충전을 진행할 수 있습니다.',
     });
     return;
   }
 
+  await showModal(interaction, {
+    custom_id: CHARGE_MODAL_ID,
+    title: '충전 금액 입력',
+    components: [
+      {
+        type: 1,
+        components: [
+          {
+            type: 4,
+            custom_id: CHARGE_AMOUNT_INPUT_ID,
+            label: '충전할 금액 (원)',
+            style: 1,
+            min_length: 2,
+            max_length: 9,
+            placeholder: '예: 3000',
+            required: true,
+          },
+        ],
+      },
+    ],
+  });
+}
+
+/**
+ * 충전 금액 모달 제출 처리 → 고유 입금 금액 배정 후 안내.
+ */
+async function handleChargeModalSubmit(interaction) {
   await deferEphemeral(interaction);
 
-  try {
-    const username = interaction.user.username.replace(/[^a-zA-Z0-9-_]/g, '').slice(0, 20);
-    const channelName = `충전-${username || interaction.user.id.slice(-6)}`;
+  const raw = interaction.fields.getTextInputValue(CHARGE_AMOUNT_INPUT_ID);
+  const requestedAmount = Number(raw.replace(/[,\s원]/g, ''));
 
-    const channel = await interaction.guild.channels.create({
-      name: channelName,
-      type: ChannelType.GuildText,
-      parent: RECHARGE_CATEGORY_ID,
-      permissionOverwrites: [
-        {
-          id: interaction.guild.id,
-          deny: [PermissionFlagsBits.ViewChannel],
-        },
-        {
-          id: interaction.user.id,
-          allow: [
-            PermissionFlagsBits.ViewChannel,
-            PermissionFlagsBits.SendMessages,
-            PermissionFlagsBits.ReadMessageHistory,
-          ],
-        },
-        {
-          id: interaction.client.user.id,
-          allow: [
-            PermissionFlagsBits.ViewChannel,
-            PermissionFlagsBits.SendMessages,
-            PermissionFlagsBits.ReadMessageHistory,
-            PermissionFlagsBits.ManageChannels,
-          ],
-        },
-      ],
-      reason: `충전 요청: ${interaction.user.tag}`,
-    });
-
-    const closeRow = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`dash|close|${interaction.user.id}`)
-        .setLabel('닫기')
-        .setEmoji('🔒')
-        .setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder()
-        .setCustomId(`dash|delete|${interaction.user.id}`)
-        .setLabel('채널 삭제')
-        .setEmoji('🗑️')
-        .setStyle(ButtonStyle.Danger)
-    );
-
-    const rechargeEmbed = new EmbedBuilder()
-      .setColor(0x57f287)
-      .setTitle('충전 문의')
-      .setDescription(
-        `<@${interaction.user.id}> 충전 요청 내용을 입력해 주세요.\n문의가 끝나면 아래 **닫기** 버튼을 눌러주세요.`
-      );
-
-    await channel.send({
-      embeds: [rechargeEmbed],
-      components: [closeRow],
-    });
-
+  if (!Number.isSafeInteger(requestedAmount) || requestedAmount <= 0) {
     await interaction.editReply({
-      content: `충전 채널이 생성되었습니다: ${channel}`,
+      content: '올바른 금액을 숫자로 입력해 주세요. (예: 3000)',
     });
-  } catch (error) {
-    console.error('[dashboard] recharge error:', error);
+    return;
+  }
+
+  const result = createRequest(
+    interaction.user.id,
+    interaction.user.username,
+    requestedAmount
+  );
+
+  if (result.status === 'invalid') {
+    await interaction.editReply({
+      content: '올바른 금액을 입력해 주세요.',
+    });
+    return;
+  }
+
+  if (result.status === 'full') {
     await interaction.editReply({
       content:
-        '충전 채널 생성에 실패했습니다. 봇 권한(채널 관리)과 카테고리 설정을 확인해 주세요.',
+        '현재 요청이 많아 고유 금액을 배정하지 못했습니다. 금액을 조금 바꿔서 다시 시도해 주세요.',
     });
+    return;
   }
+
+  const { depositAmount } = result.request;
+  const minutes = Math.round(REQUEST_TTL_MS / 60000);
+
+  const embed = new EmbedBuilder()
+    .setColor(0x57f287)
+    .setTitle('입금 대기중')
+    .setDescription(
+      [
+        '아래 **정확한 금액**을 입금해 주세요. 금액이 다르면 자동 인식되지 않습니다.',
+        '',
+        `**입금 금액: ${depositAmount.toLocaleString()}원**`,
+        '',
+        '**입금 계좌**',
+        DEPOSIT_ACCOUNT_INFO,
+        '',
+        `입금이 확인되면 자동으로 충전되고 DM으로 알려드립니다. (유효 시간: ${minutes}분)`,
+      ].join('\n')
+    );
+
+  await interaction.editReply({ embeds: [embed] });
 }
 
 async function handleCloseRechargeChannel(interaction) {
@@ -320,4 +387,7 @@ async function handlePurchaseMenu(interaction) {
 module.exports = {
   handleDashboardButton,
   handleDashboardSelect,
+  handleChargeModalSubmit,
+  createRechargeChannel,
+  CHARGE_MODAL_ID,
 };
