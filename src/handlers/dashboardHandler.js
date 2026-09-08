@@ -8,12 +8,21 @@ const {
   StringSelectMenuBuilder,
 } = require('discord.js');
 const { RECHARGE_CATEGORY_ID } = require('../commands/dashboard');
-const { getProducts, getBalance, purchaseProduct } = require('../utils/shopData');
+const {
+  getProducts,
+  getBalance,
+  purchaseProduct,
+  updateBalance,
+} = require('../utils/shopData');
 const {
   deferEphemeral,
   showModal,
 } = require('../utils/interactionResponse');
-const { createRequest, REQUEST_TTL_MS } = require('../utils/depositRequests');
+const {
+  createRequest,
+  resolveApproval,
+  REQUEST_TTL_MS,
+} = require('../utils/depositRequests');
 
 // 입금 계좌 안내 문구 (환경 변수로 관리, 미설정 시 기본 안내)
 const DEPOSIT_ACCOUNT_INFO =
@@ -22,6 +31,7 @@ const DEPOSIT_ACCOUNT_INFO =
 
 const CHARGE_MODAL_ID = 'dash|charge-modal';
 const CHARGE_AMOUNT_INPUT_ID = 'amount';
+const CHARGE_NAME_INPUT_ID = 'depositor';
 
 async function handleDashboardButton(interaction) {
   const action = interaction.customId.split('|')[1];
@@ -53,6 +63,16 @@ async function handleDashboardButton(interaction) {
 
   if (action === 'delete') {
     await handleDeleteRechargeChannel(interaction);
+    return;
+  }
+
+  if (action === 'approve') {
+    await handleApproveDeposit(interaction);
+    return;
+  }
+
+  if (action === 'reject') {
+    await handleRejectDeposit(interaction);
   }
 }
 
@@ -195,7 +215,7 @@ async function handleRechargeModal(interaction) {
 
   await showModal(interaction, {
     custom_id: CHARGE_MODAL_ID,
-    title: '충전 금액 입력',
+    title: '충전 신청',
     components: [
       {
         type: 1,
@@ -212,6 +232,21 @@ async function handleRechargeModal(interaction) {
           },
         ],
       },
+      {
+        type: 1,
+        components: [
+          {
+            type: 4,
+            custom_id: CHARGE_NAME_INPUT_ID,
+            label: '입금자명 (실제 보내는 사람 이름)',
+            style: 1,
+            min_length: 2,
+            max_length: 20,
+            placeholder: '예: 홍길동',
+            required: true,
+          },
+        ],
+      },
     ],
   });
 }
@@ -223,6 +258,7 @@ async function handleChargeModalSubmit(interaction) {
   await deferEphemeral(interaction);
 
   const raw = interaction.fields.getTextInputValue(CHARGE_AMOUNT_INPUT_ID);
+  const depositorName = interaction.fields.getTextInputValue(CHARGE_NAME_INPUT_ID);
   const requestedAmount = Number(raw.replace(/[,\s원]/g, ''));
 
   if (!Number.isSafeInteger(requestedAmount) || requestedAmount <= 0) {
@@ -235,12 +271,20 @@ async function handleChargeModalSubmit(interaction) {
   const result = createRequest(
     interaction.user.id,
     interaction.user.username,
-    requestedAmount
+    requestedAmount,
+    depositorName
   );
 
   if (result.status === 'invalid') {
     await interaction.editReply({
       content: '올바른 금액을 입력해 주세요.',
+    });
+    return;
+  }
+
+  if (result.status === 'invalid_name') {
+    await interaction.editReply({
+      content: '입금자명을 2글자 이상 정확히 입력해 주세요.',
     });
     return;
   }
@@ -253,7 +297,7 @@ async function handleChargeModalSubmit(interaction) {
     return;
   }
 
-  const { depositAmount } = result.request;
+  const { depositAmount, expectedName } = result.request;
   const minutes = Math.round(REQUEST_TTL_MS / 60000);
 
   const embed = new EmbedBuilder()
@@ -261,9 +305,11 @@ async function handleChargeModalSubmit(interaction) {
     .setTitle('입금 대기중')
     .setDescription(
       [
-        '아래 **정확한 금액**을 입금해 주세요. 금액이 다르면 자동 인식되지 않습니다.',
+        '아래 **정확한 금액**을 **입력한 입금자명 그대로** 입금해 주세요.',
+        '금액이나 이름이 다르면 자동 충전되지 않고 관리자 확인으로 넘어갑니다.',
         '',
         `**입금 금액: ${depositAmount.toLocaleString()}원**`,
+        `**입금자명: ${expectedName}**`,
         '',
         '**입금 계좌**',
         DEPOSIT_ACCOUNT_INFO,
@@ -330,6 +376,89 @@ async function handleDeleteRechargeChannel(interaction) {
       ?.delete(`관리자 채널 삭제: ${interaction.user.tag}`)
       .catch((error) => console.error('[dashboard] delete channel error:', error));
   }, 1_500);
+}
+
+async function handleApproveDeposit(interaction) {
+  const token = interaction.customId.split('|')[2];
+  const isAdministrator = interaction.memberPermissions?.has(
+    PermissionFlagsBits.Administrator
+  );
+
+  await deferEphemeral(interaction);
+
+  if (!isAdministrator) {
+    await interaction.editReply({ content: '관리자만 승인할 수 있습니다.' });
+    return;
+  }
+
+  const approval = resolveApproval(token);
+  if (!approval) {
+    await interaction.editReply({
+      content: '이미 처리되었거나 만료된 승인 요청입니다.',
+    });
+    return;
+  }
+
+  try {
+    await updateBalance(approval.userId, 'add', approval.amount);
+    const { amount: balance } = await getBalance(approval.userId);
+
+    try {
+      const user = await interaction.client.users.fetch(approval.userId);
+      await user.send(
+        [
+          '입금이 관리자 승인으로 충전되었습니다.',
+          `충전 금액: **${approval.amount.toLocaleString()}원**`,
+          `현재 잔액: **${balance.toLocaleString()}원**`,
+        ].join('\n')
+      );
+    } catch {
+      /* DM 실패는 무시 */
+    }
+
+    await interaction.editReply({
+      content: `승인 완료: <@${approval.userId}> +${approval.amount.toLocaleString()}원 (잔액 ${balance.toLocaleString()}원)`,
+    });
+
+    await interaction.message
+      ?.edit({
+        components: [],
+      })
+      .catch(() => {});
+  } catch (error) {
+    console.error('[dashboard] approve error:', error);
+    await interaction.editReply({
+      content: '승인 처리 중 오류가 발생했습니다.',
+    });
+  }
+}
+
+async function handleRejectDeposit(interaction) {
+  const token = interaction.customId.split('|')[2];
+  const isAdministrator = interaction.memberPermissions?.has(
+    PermissionFlagsBits.Administrator
+  );
+
+  await deferEphemeral(interaction);
+
+  if (!isAdministrator) {
+    await interaction.editReply({ content: '관리자만 거절할 수 있습니다.' });
+    return;
+  }
+
+  const approval = resolveApproval(token);
+  if (!approval) {
+    await interaction.editReply({
+      content: '이미 처리되었거나 만료된 승인 요청입니다.',
+    });
+    return;
+  }
+
+  await interaction.editReply({
+    content: `거절 처리했습니다. (입금 ${approval.amount.toLocaleString()}원, 요청 유저 <@${approval.userId}>)`,
+  });
+
+  await interaction.message?.edit({ components: [] }).catch(() => {});
 }
 
 async function handleInfo(interaction) {
