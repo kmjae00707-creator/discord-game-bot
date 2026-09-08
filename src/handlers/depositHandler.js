@@ -25,7 +25,11 @@ function extractAmount(body) {
     return null;
   }
 
-  const digits = String(body).replace(/[^\d]/g, '');
+  const text = String(body);
+
+  // "3,215원" 처럼 '원' 바로 앞의 숫자를 우선 인식 (시각 등 다른 숫자 오인 방지)
+  const wonMatch = text.match(/([\d,]+)\s*원/);
+  const digits = (wonMatch ? wonMatch[1] : text).replace(/[^\d]/g, '');
   if (!digits) return null;
 
   const amount = Number(digits);
