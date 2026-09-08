@@ -22,8 +22,10 @@ const dashboardCommand = {
       .setDescription(
         [
           '• 원하시는 버튼을 클릭해 주세요.',
+          '• 제품: **로벅스** / **인게임**',
+          '• 로벅스 = gppoint로 구매 (1 gp = 1 로벅스 = 15원)',
+          '• gppoint는 **GP구매** 또는 `/slot` 미니게임으로 모읍니다.',
           '• 24시간 자동충전 및 구매가 가능합니다.',
-          '• 문제가 발생할 경우 문의하기에 앞서 필독사항을 확인하시고 문의하기 채널을 통해 문의해 주세요.',
         ].join('\n')
       );
 
@@ -43,7 +45,11 @@ const dashboardCommand = {
       new ButtonBuilder()
         .setCustomId('dash|purchase')
         .setLabel('구매')
-        .setStyle(ButtonStyle.Primary)
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId('dash|gpbuy')
+        .setLabel('GP구매')
+        .setStyle(ButtonStyle.Success)
     );
 
     await replyEphemeral(interaction, '대시보드를 게시했습니다.');

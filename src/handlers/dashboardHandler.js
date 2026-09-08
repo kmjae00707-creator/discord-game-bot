@@ -23,6 +23,14 @@ const {
   resolveApproval,
   REQUEST_TTL_MS,
 } = require('../utils/depositRequests');
+const {
+  getGppoint,
+  getRobuxStock,
+  buyRobux,
+  buyGppoint,
+  WON_PER_GP,
+  ROBUX_PER_GP,
+} = require('../utils/gppointData');
 
 // 입금 계좌 안내 문구 (환경 변수로 관리, 미설정 시 기본 안내)
 const DEPOSIT_ACCOUNT_INFO =
@@ -36,6 +44,15 @@ const CHARGE_NAME_INPUT_ID = 'depositor';
 // 미매칭 입금 수동 충전 모달 (customId: dash|mfix-modal|<amount>)
 const MFIX_MODAL_PREFIX = 'dash|mfix-modal|';
 const MFIX_USER_INPUT_ID = 'userid';
+
+// 카테고리 선택 메뉴 / 로벅스 구매 모달
+const CAT_VIEW_SELECT = 'dash|catview';
+const CAT_BUY_SELECT = 'dash|catbuy';
+const INGAME_BUY_SELECT = 'dash|buy';
+const ROBUX_MODAL_ID = 'dash|robux-modal';
+const ROBUX_AMOUNT_INPUT_ID = 'robux';
+const GP_MODAL_ID = 'dash|gp-modal';
+const GP_AMOUNT_INPUT_ID = 'gpqty';
 
 async function handleDashboardButton(interaction) {
   const action = interaction.customId.split('|')[1];
@@ -60,6 +77,11 @@ async function handleDashboardButton(interaction) {
     return;
   }
 
+  if (action === 'gpbuy') {
+    await showGpBuyModal(interaction);
+    return;
+  }
+
   if (action === 'close') {
     await handleCloseRechargeChannel(interaction);
     return;
@@ -72,6 +94,11 @@ async function handleDashboardButton(interaction) {
 
   if (action === 'approve') {
     await handleApproveDeposit(interaction);
+    return;
+  }
+
+  if (action === 'robuxbuy') {
+    await showRobuxBuyModal(interaction);
     return;
   }
 
@@ -91,8 +118,22 @@ async function handleDashboardButton(interaction) {
 }
 
 async function handleDashboardSelect(interaction) {
-  if (interaction.customId !== 'dash|buy') return;
+  const { customId } = interaction;
 
+  if (customId === CAT_VIEW_SELECT) {
+    await handleCategoryView(interaction);
+    return;
+  }
+  if (customId === CAT_BUY_SELECT) {
+    await handleCategoryBuy(interaction);
+    return;
+  }
+  if (customId === INGAME_BUY_SELECT) {
+    await handleIngameBuySelect(interaction);
+  }
+}
+
+async function handleIngameBuySelect(interaction) {
   const productId = interaction.values[0];
   await deferEphemeral(interaction);
 
@@ -139,14 +180,67 @@ async function handleDashboardSelect(interaction) {
   }
 }
 
+/** 카테고리 선택 메뉴(로벅스/인게임)를 만듭니다. */
+function buildCategoryMenu(customId) {
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId(customId)
+    .setPlaceholder('카테고리를 선택하세요')
+    .addOptions(
+      { label: '로벅스', description: 'gppoint로 로벅스 구매', value: 'robux', emoji: '💰' },
+      { label: '인게임', description: '원(잔액)으로 인게임 제품 구매', value: 'ingame', emoji: '🎮' }
+    );
+  return new ActionRowBuilder().addComponents(menu);
+}
+
+// 제품 버튼 → 카테고리 선택(보기)
 async function handleProducts(interaction) {
   await deferEphemeral(interaction);
+  await interaction.editReply({
+    content: '어떤 카테고리를 볼까요?',
+    components: [buildCategoryMenu(CAT_VIEW_SELECT)],
+  });
+}
 
+// 구매 버튼 → 카테고리 선택(구매)
+async function handlePurchaseMenu(interaction) {
+  await deferEphemeral(interaction);
+  await interaction.editReply({
+    content: '어떤 카테고리를 구매할까요?',
+    components: [buildCategoryMenu(CAT_BUY_SELECT)],
+  });
+}
+
+// 카테고리 선택(보기) 처리
+async function handleCategoryView(interaction) {
+  await deferEphemeral(interaction);
+  const category = interaction.values[0];
+
+  if (category === 'robux') {
+    await showRobuxInfo(interaction);
+    return;
+  }
+  await showIngameList(interaction);
+}
+
+// 카테고리 선택(구매) 처리
+async function handleCategoryBuy(interaction) {
+  await deferEphemeral(interaction);
+  const category = interaction.values[0];
+
+  if (category === 'robux') {
+    await showRobuxBuyPrompt(interaction);
+    return;
+  }
+  await showIngameBuyMenu(interaction);
+}
+
+// 인게임 제품 목록 표시
+async function showIngameList(interaction) {
   try {
     const { products } = await getProducts();
 
     if (products.length === 0) {
-      await interaction.editReply({ content: '등록된 제품이 없습니다.' });
+      await interaction.editReply({ content: '등록된 인게임 제품이 없습니다.', components: [] });
       return;
     }
 
@@ -159,17 +253,70 @@ async function handleProducts(interaction) {
 
     const embed = new EmbedBuilder()
       .setColor(0x5865f2)
-      .setTitle('제품 목록')
+      .setTitle('인게임 제품 목록')
       .setDescription(list)
-      .setFooter({ text: '구매 버튼에서 원하는 제품을 선택해 주세요.' });
+      .setFooter({ text: '구매 → 인게임에서 원하는 제품을 선택해 주세요.' });
 
-    await interaction.editReply({
-      embeds: [embed],
-    });
+    await interaction.editReply({ embeds: [embed], components: [] });
   } catch (error) {
     console.error('[dashboard] products error:', error);
-    await interaction.editReply({ content: '제품 목록을 불러오지 못했습니다.' });
+    await interaction.editReply({ content: '제품 목록을 불러오지 못했습니다.', components: [] });
   }
+}
+
+// 로벅스 안내(환율/재고)
+async function showRobuxInfo(interaction) {
+  try {
+    const { amount: gp } = await getGppoint(interaction.user.id);
+    const { stock } = await getRobuxStock();
+
+    const embed = new EmbedBuilder()
+      .setColor(0xfaa61a)
+      .setTitle('로벅스')
+      .setDescription(
+        [
+          `환율: **1 gppoint = ${ROBUX_PER_GP} 로벅스 = ${WON_PER_GP}원**`,
+          `현재 재고: **${stock.toLocaleString()} 로벅스**`,
+          `내 gppoint: **${gp.toLocaleString()} gp**`,
+          '',
+          'gppoint는 **GP구매**(1gp=15원) 또는 `/slot` 미니게임으로 모을 수 있어요.',
+          '구매하려면 구매 버튼 → 로벅스를 선택하세요.',
+        ].join('\n')
+      );
+
+    await interaction.editReply({ embeds: [embed], components: [] });
+  } catch (error) {
+    console.error('[dashboard] robux info error:', error);
+    await interaction.editReply({ content: '로벅스 정보를 불러오지 못했습니다.', components: [] });
+  }
+}
+
+// 로벅스 구매 안내(모달은 버튼으로) — 구매 수량 입력 모달 트리거 버튼 제공
+async function showRobuxBuyPrompt(interaction) {
+  const { amount: gp } = await getGppoint(interaction.user.id);
+  const { stock } = await getRobuxStock();
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('dash|robuxbuy')
+      .setLabel('구매 수량 입력')
+      .setEmoji('💰')
+      .setStyle(ButtonStyle.Success)
+  );
+
+  const embed = new EmbedBuilder()
+    .setColor(0xfaa61a)
+    .setTitle('로벅스 구매')
+    .setDescription(
+      [
+        `내 gppoint: **${gp.toLocaleString()} gp** / 재고: **${stock.toLocaleString()} 로벅스**`,
+        `**1 gppoint = ${ROBUX_PER_GP} 로벅스 (${WON_PER_GP}원)**`,
+        '',
+        '아래 버튼을 눌러 구매할 로벅스 수량을 입력하세요.',
+      ].join('\n')
+    );
+
+  await interaction.editReply({ embeds: [embed], components: [row] });
 }
 
 /**
@@ -475,6 +622,171 @@ async function handleRejectDeposit(interaction) {
   await interaction.message?.edit({ components: [] }).catch(() => {});
 }
 
+/** 로벅스 구매 수량 입력 모달을 띄웁니다. */
+async function showRobuxBuyModal(interaction) {
+  await showModal(interaction, {
+    custom_id: ROBUX_MODAL_ID,
+    title: '로벅스 구매',
+    components: [
+      {
+        type: 1,
+        components: [
+          {
+            type: 4,
+            custom_id: ROBUX_AMOUNT_INPUT_ID,
+            label: '구매할 로벅스 수량',
+            style: 1,
+            min_length: 1,
+            max_length: 9,
+            placeholder: '예: 100',
+            required: true,
+          },
+        ],
+      },
+    ],
+  });
+}
+
+/** 로벅스 구매 모달 제출 → gppoint 차감 + 재고 차감 후 지급 안내. */
+async function handleRobuxModalSubmit(interaction) {
+  await deferEphemeral(interaction);
+
+  const raw = interaction.fields.getTextInputValue(ROBUX_AMOUNT_INPUT_ID);
+  const robuxAmount = Number(raw.replace(/[,\s]/g, ''));
+
+  if (!Number.isSafeInteger(robuxAmount) || robuxAmount <= 0) {
+    await interaction.editReply({ content: '올바른 수량을 숫자로 입력해 주세요. (예: 100)' });
+    return;
+  }
+
+  try {
+    const result = await buyRobux(interaction.user.id, robuxAmount);
+
+    if (result.status === 'insufficient_gp') {
+      await interaction.editReply({
+        content: [
+          'gppoint가 부족합니다.',
+          `필요: **${result.gpCost.toLocaleString()} gp**`,
+          `보유: **${result.gp.toLocaleString()} gp**`,
+          '`/slot` 또는 `/gppoint buy`로 gppoint를 모아주세요.',
+        ].join('\n'),
+      });
+      return;
+    }
+
+    if (result.status === 'out_of_stock') {
+      await interaction.editReply({
+        content: `로벅스 재고가 부족합니다. 현재 재고: **${result.stock.toLocaleString()} 로벅스**`,
+      });
+      return;
+    }
+
+    // 지급 안내: 유저 DM + (설정 시) 관리자 채널 알림
+    try {
+      await interaction.user.send(
+        [
+          `로벅스 **${result.robuxAmount.toLocaleString()}** 구매 완료!`,
+          `차감 gppoint: **${result.gpCost.toLocaleString()} gp** / 남은 gppoint: **${result.gp.toLocaleString()} gp**`,
+          '지급까지 잠시만 기다려 주세요. (관리자가 확인 후 지급)',
+        ].join('\n')
+      );
+    } catch {
+      /* DM 실패 무시 */
+    }
+
+    const logChannelId = process.env.ROBUX_LOG_CHANNEL_ID?.trim();
+    if (logChannelId) {
+      try {
+        const channel = await interaction.client.channels.fetch(logChannelId);
+        if (channel?.isTextBased()) {
+          await channel.send(
+            `로벅스 지급 요청: <@${interaction.user.id}> — **${result.robuxAmount.toLocaleString()} 로벅스** (남은 재고 ${result.stock.toLocaleString()})`
+          );
+        }
+      } catch (error) {
+        console.error('[dashboard] robux log post failed:', error.message);
+      }
+    }
+
+    await interaction.editReply({
+      content: [
+        `로벅스 **${result.robuxAmount.toLocaleString()}** 구매 완료!`,
+        `남은 gppoint: **${result.gp.toLocaleString()} gp**`,
+        `남은 재고: **${result.stock.toLocaleString()} 로벅스**`,
+        '지급 안내를 DM으로 보냈습니다.',
+      ].join('\n'),
+    });
+  } catch (error) {
+    console.error('[dashboard] robux buy error:', error);
+    await interaction.editReply({ content: '로벅스 구매 처리 중 오류가 발생했습니다.' });
+  }
+}
+
+/** gppoint를 원(잔액)으로 사는 수량 입력 모달. */
+async function showGpBuyModal(interaction) {
+  await showModal(interaction, {
+    custom_id: GP_MODAL_ID,
+    title: `gppoint 구매 (1gp = ${WON_PER_GP}원)`,
+    components: [
+      {
+        type: 1,
+        components: [
+          {
+            type: 4,
+            custom_id: GP_AMOUNT_INPUT_ID,
+            label: '구매할 gppoint 수량',
+            style: 1,
+            min_length: 1,
+            max_length: 9,
+            placeholder: '예: 100',
+            required: true,
+          },
+        ],
+      },
+    ],
+  });
+}
+
+/** gppoint 구매 모달 제출 → 잔액 차감 후 gp 지급. */
+async function handleGpModalSubmit(interaction) {
+  await deferEphemeral(interaction);
+
+  const raw = interaction.fields.getTextInputValue(GP_AMOUNT_INPUT_ID);
+  const gpAmount = Number(raw.replace(/[,\s]/g, ''));
+
+  if (!Number.isSafeInteger(gpAmount) || gpAmount <= 0) {
+    await interaction.editReply({ content: '올바른 수량을 숫자로 입력해 주세요. (예: 100)' });
+    return;
+  }
+
+  try {
+    const result = await buyGppoint(interaction.user.id, gpAmount);
+
+    if (result.status === 'insufficient_won') {
+      await interaction.editReply({
+        content: [
+          '잔액이 부족합니다.',
+          `필요: **${result.cost.toLocaleString()}원** (${gpAmount}gp × ${WON_PER_GP}원)`,
+          `현재 잔액: **${result.won.toLocaleString()}원**`,
+        ].join('\n'),
+      });
+      return;
+    }
+
+    await interaction.editReply({
+      content: [
+        `gppoint **${gpAmount.toLocaleString()} gp** 구매 완료!`,
+        `차감: **${result.cost.toLocaleString()}원**`,
+        `남은 잔액: **${result.won.toLocaleString()}원**`,
+        `현재 gppoint: **${result.gp.toLocaleString()} gp**`,
+      ].join('\n'),
+    });
+  } catch (error) {
+    console.error('[dashboard] gp buy error:', error);
+    await interaction.editReply({ content: 'gppoint 구매 처리 중 오류가 발생했습니다.' });
+  }
+}
+
 /**
  * 미매칭 입금의 [확인(충전)] 버튼 → 충전할 유저를 입력받는 모달을 띄웁니다.
  * customId: dash|mfix|<amount>
@@ -597,30 +909,45 @@ async function handleInfo(interaction) {
 
   try {
     const { amount } = await getBalance(interaction.user.id);
-    await interaction.editReply({
-      content: `<@${interaction.user.id}>님의 현재 잔액: **${amount.toLocaleString()}원**`,
-    });
+    const { amount: gp } = await getGppoint(interaction.user.id);
+    const { stock } = await getRobuxStock();
+
+    const embed = new EmbedBuilder()
+      .setColor(0x5865f2)
+      .setTitle('내 정보')
+      .setDescription(
+        [
+          `잔액: **${amount.toLocaleString()}원**`,
+          `gppoint: **${gp.toLocaleString()} gp**`,
+          `로벅스 재고: **${stock.toLocaleString()}**`,
+          '',
+          `환율: **1 gp = ${ROBUX_PER_GP} 로벅스 = ${WON_PER_GP}원**`,
+          'gppoint 모으기: **GP구매** 또는 `/slot`',
+        ].join('\n')
+      );
+
+    await interaction.editReply({ embeds: [embed] });
   } catch (error) {
     console.error('[dashboard] info error:', error);
     await interaction.editReply({ content: '잔액 정보를 불러오지 못했습니다.' });
   }
 }
 
-async function handlePurchaseMenu(interaction) {
-  await deferEphemeral(interaction);
-
+// 인게임 제품 구매 선택 메뉴 (이미 defer된 상태에서 호출)
+async function showIngameBuyMenu(interaction) {
   try {
     const { products } = await getProducts();
 
     if (products.length === 0) {
       await interaction.editReply({
-        content: '등록된 제품이 없습니다.',
+        content: '등록된 인게임 제품이 없습니다.',
+        components: [],
       });
       return;
     }
 
     const menu = new StringSelectMenuBuilder()
-      .setCustomId('dash|buy')
+      .setCustomId(INGAME_BUY_SELECT)
       .setPlaceholder('구매할 제품을 선택하세요')
       .addOptions(
         products.slice(0, 25).map((product) => ({
@@ -633,13 +960,14 @@ async function handlePurchaseMenu(interaction) {
     const row = new ActionRowBuilder().addComponents(menu);
 
     await interaction.editReply({
-      content: '구매할 제품을 선택해 주세요.',
+      content: '구매할 인게임 제품을 선택해 주세요.',
       components: [row],
     });
   } catch (error) {
     console.error('[dashboard] purchase menu error:', error);
     await interaction.editReply({
       content: '제품 목록을 불러오지 못했습니다.',
+      components: [],
     });
   }
 }
@@ -668,8 +996,12 @@ module.exports = {
   handleDashboardSelect,
   handleChargeModalSubmit,
   handleMismatchFixModalSubmit,
+  handleRobuxModalSubmit,
+  handleGpModalSubmit,
   createRechargeChannel,
   buildMismatchButtons,
   CHARGE_MODAL_ID,
   MFIX_MODAL_PREFIX,
+  ROBUX_MODAL_ID,
+  GP_MODAL_ID,
 };

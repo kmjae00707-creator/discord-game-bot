@@ -1,6 +1,9 @@
 const { readDataFile, writeDataFiles } = require('./dataStore');
+const { enqueue } = require('./mutationQueue');
 
-const SHOP_FILE = 'shop';
+// 인게임 제품은 ingame 파일에서 읽고, 없으면 기존 shop 파일로 폴백합니다.
+const INGAME_FILE = 'ingame';
+const LEGACY_SHOP_FILE = 'shop';
 const BALANCE_FILE = 'balance';
 const KEY_PLACEHOLDER_PATTERN = /\{(cotvkey|rtkey)\}/g;
 const PENDING_KEY_FILES = {
@@ -8,13 +11,8 @@ const PENDING_KEY_FILES = {
   rtkey: 'unusedrtkey',
 };
 
-let purchaseQueue = Promise.resolve();
-
-function enqueueBalanceMutation(operation) {
-  const result = purchaseQueue.then(operation);
-  purchaseQueue = result.catch(() => {});
-  return result;
-}
+// 잔액·gppoint·재고 변경을 공용 큐로 직렬화
+const enqueueBalanceMutation = enqueue;
 
 function parseShop(content) {
   return content
@@ -71,7 +69,11 @@ function balancesToContent(balances) {
 }
 
 async function getProducts() {
-  const file = await readDataFile(SHOP_FILE);
+  let file = await readDataFile(INGAME_FILE);
+  // ingame 파일이 비어 있으면 기존 shop 파일에서 읽습니다(마이그레이션 호환).
+  if (!file.content || !file.content.trim()) {
+    file = await readDataFile(LEGACY_SHOP_FILE);
+  }
   return { products: parseShop(file.content), sha: file.sha };
 }
 
@@ -260,4 +262,8 @@ module.exports = {
   getBalance,
   purchaseProduct,
   updateBalance,
+  // gppointData 등에서 잔액을 원자적으로 함께 갱신할 때 재사용
+  parseBalances,
+  balancesToContent,
+  BALANCE_FILE,
 };

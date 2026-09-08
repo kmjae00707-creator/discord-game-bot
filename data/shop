@@ -1,2 +1,3 @@
-cotv겜페|6500|{cotvkey}
-런타임tv겜페|3500|{rtkey}
+# 이 파일은 더 이상 사용하지 않습니다.
+# 인게임 제품은 data/ingame 에 추가하세요. (이름|가격|DM내용)
+# 로벅스 재고는 data/robux, gppoint 잔액은 data/gppoint 입니다.

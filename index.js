@@ -13,13 +13,19 @@ const { tictaktoCommand, handleTttButton } = require('./src/commands/tictakto');
 const { redeemCommand } = require('./src/commands/redeem');
 const { dashboardCommand } = require('./src/commands/dashboard');
 const { balanceCommand } = require('./src/commands/balance');
+const { gppointCommand } = require('./src/commands/gppoint');
+const { slotCommand } = require('./src/commands/slot');
 const {
   handleDashboardButton,
   handleDashboardSelect,
   handleChargeModalSubmit,
   handleMismatchFixModalSubmit,
+  handleRobuxModalSubmit,
+  handleGpModalSubmit,
   CHARGE_MODAL_ID,
   MFIX_MODAL_PREFIX,
+  ROBUX_MODAL_ID,
+  GP_MODAL_ID,
 } = require('./src/handlers/dashboardHandler');
 const { processDeposit } = require('./src/handlers/depositHandler');
 
@@ -52,6 +58,8 @@ const commands = [
   redeemCommand.data.toJSON(),
   dashboardCommand.data.toJSON(),
   balanceCommand.data.toJSON(),
+  gppointCommand.data.toJSON(),
+  slotCommand.data.toJSON(),
 ];
 
 /** @type {Client | null} */
@@ -125,6 +133,16 @@ function attachClientHandlers(discordClient) {
 
         if (interaction.commandName === 'balance') {
           await balanceCommand.execute(interaction);
+          return;
+        }
+
+        if (interaction.commandName === 'gppoint') {
+          await gppointCommand.execute(interaction);
+          return;
+        }
+
+        if (interaction.commandName === 'slot') {
+          await slotCommand.execute(interaction);
         }
         return;
       }
@@ -134,13 +152,23 @@ function attachClientHandlers(discordClient) {
         return;
       }
 
-      if (interaction.isStringSelectMenu() && interaction.customId === 'dash|buy') {
+      if (interaction.isStringSelectMenu() && interaction.customId.startsWith('dash|')) {
         await handleDashboardSelect(interaction);
         return;
       }
 
       if (interaction.isModalSubmit() && interaction.customId === CHARGE_MODAL_ID) {
         await handleChargeModalSubmit(interaction);
+        return;
+      }
+
+      if (interaction.isModalSubmit() && interaction.customId === ROBUX_MODAL_ID) {
+        await handleRobuxModalSubmit(interaction);
+        return;
+      }
+
+      if (interaction.isModalSubmit() && interaction.customId === GP_MODAL_ID) {
+        await handleGpModalSubmit(interaction);
         return;
       }
 
