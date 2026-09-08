@@ -12,8 +12,13 @@ const GPPOINT_FILE = 'gppoint';
 const ROBUX_FILE = 'robux';
 
 // 환율
-const WON_PER_GP = Number(process.env.WON_PER_GP) || 15; // 1 gppoint = 15원
+const WON_PER_GP = Number(process.env.WON_PER_GP) || 6.667; // 1 gppoint = 6.667원
 const ROBUX_PER_GP = Number(process.env.ROBUX_PER_GP) || 1; // 1 gppoint = 1 로벅스
+
+/** 원 잔액은 정수이므로 gp×환율을 반올림합니다. */
+function gpToWon(gpAmount) {
+  return Math.max(1, Math.round(gpAmount * WON_PER_GP));
+}
 
 /** gppoint 잔액 파일은 balance와 동일한 "userId:수량" 형식을 사용합니다. */
 function parsePoints(content) {
@@ -89,7 +94,7 @@ async function executeGppointUpdate(userId, operation, amount = 0) {
 
 /** gppoint를 원(잔액)으로 구매: 1gp = WON_PER_GP원. */
 async function executeBuyGppoint(userId, gpAmount) {
-  const cost = gpAmount * WON_PER_GP;
+  const cost = gpToWon(gpAmount);
 
   const balanceFile = await readDataFile(BALANCE_FILE);
   const balances = parseBalances(balanceFile.content);
@@ -195,4 +200,5 @@ module.exports = {
   buyRobux,
   WON_PER_GP,
   ROBUX_PER_GP,
+  gpToWon,
 };

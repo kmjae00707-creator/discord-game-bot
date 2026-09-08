@@ -279,7 +279,7 @@ async function showRobuxInfo(interaction) {
           `현재 재고: **${stock.toLocaleString()} 로벅스**`,
           `내 gppoint: **${gp.toLocaleString()} gp**`,
           '',
-          'gppoint는 **GP구매**(1gp=15원) 또는 `/slot` 미니게임으로 모을 수 있어요.',
+          'gppoint는 **GP구매**(1gp=6.667원) 또는 `/slot` 미니게임으로 모을 수 있어요.',
           '구매하려면 구매 버튼 → 로벅스를 선택하세요.',
         ].join('\n')
       );
