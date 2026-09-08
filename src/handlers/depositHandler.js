@@ -7,10 +7,44 @@ const {
   ButtonStyle,
 } = require('discord.js');
 const {
+  peekDeposit,
   matchDeposit,
   isNameMatch,
   createApproval,
 } = require('../utils/depositRequests');
+
+// 알림(금액만)과 접근성(금액+이름) 이벤트가 시차를 두고 오므로,
+// 이름 없는 매칭은 잠시 기다렸다가 이름 이벤트가 오면 자동충전합니다.
+const GRACE_MS = Number(process.env.DEPOSIT_GRACE_MS) || 8_000;
+// 중복 이벤트를 무시하기 위한 최근 처리 기록 유지 시간.
+const RECENT_TTL_MS = Number(process.env.DEPOSIT_RECENT_TTL_MS) || 120_000;
+
+/** @type {Map<number, { timer: NodeJS.Timeout, detectedName: string | null }>} */
+const scheduledApprovals = new Map();
+/** @type {Map<number, number>} amount -> handledAt */
+const recentlyHandled = new Map();
+
+function markHandled(amount) {
+  recentlyHandled.set(amount, Date.now());
+}
+
+function isRecentlyHandled(amount) {
+  const at = recentlyHandled.get(amount);
+  if (at == null) return false;
+  if (Date.now() - at > RECENT_TTL_MS) {
+    recentlyHandled.delete(amount);
+    return false;
+  }
+  return true;
+}
+
+function clearScheduled(amount) {
+  const entry = scheduledApprovals.get(amount);
+  if (entry) {
+    clearTimeout(entry.timer);
+    scheduledApprovals.delete(amount);
+  }
+}
 const { updateBalance, getBalance } = require('../utils/shopData');
 const { createRechargeChannel } = require('./dashboardHandler');
 
@@ -243,6 +277,33 @@ async function handleMismatch(client, amount, detectedName) {
 }
 
 /**
+ * 이름 없이 매칭된 입금을 유예(grace) 후 확정합니다.
+ * 유예 동안 이름 이벤트가 오면 자동충전으로 대체됩니다.
+ */
+function scheduleApproval(client, amount, detectedName) {
+  const existing = scheduledApprovals.get(amount);
+  if (existing) {
+    // 유예 중 더 나은 이름 정보가 오면 갱신만 합니다.
+    if (detectedName) existing.detectedName = detectedName;
+    return;
+  }
+
+  const timer = setTimeout(() => {
+    const entry = scheduledApprovals.get(amount);
+    scheduledApprovals.delete(amount);
+    const request = matchDeposit(amount);
+    if (!request) return; // 이미 자동충전으로 소비됨
+    markHandled(amount);
+    const name = entry?.detectedName || detectedName;
+    handleNeedsApproval(client, request, amount, name).catch((error) =>
+      console.error('[deposit] scheduled approval failed:', error)
+    );
+  }, GRACE_MS);
+
+  scheduledApprovals.set(amount, { timer, detectedName: detectedName || null });
+}
+
+/**
  * 웹훅으로 들어온 입금 알림을 처리합니다.
  * @param {import('discord.js').Client} client
  * @param {unknown} body 파싱된 JSON 또는 원문 텍스트
@@ -260,20 +321,35 @@ async function processDeposit(client, body) {
   }
 
   const detectedName = extractName(body);
-  const request = matchDeposit(amount);
+
+  // 이미 자동충전/승인 처리된 금액의 뒤늦은 중복 이벤트는 무시
+  if (isRecentlyHandled(amount)) {
+    return { ok: true, result: 'duplicate', amount, name: detectedName };
+  }
+
+  const request = peekDeposit(amount);
 
   if (!request) {
+    markHandled(amount);
     await handleMismatch(client, amount, detectedName);
     return { ok: true, result: 'mismatch', amount, name: detectedName };
   }
 
+  // 이름이 일치하면 즉시 소비 후 자동충전
   if (isNameMatch(request, detectedName)) {
-    await handleAutoCharge(client, request, amount);
+    const consumed = matchDeposit(amount);
+    if (!consumed) {
+      return { ok: true, result: 'duplicate', amount, name: detectedName };
+    }
+    clearScheduled(amount);
+    markHandled(amount);
+    await handleAutoCharge(client, consumed, amount);
     return { ok: true, result: 'charged', amount, name: detectedName };
   }
 
-  await handleNeedsApproval(client, request, amount, detectedName);
-  return { ok: true, result: 'needs_approval', amount, name: detectedName };
+  // 이름이 없거나 다르면 잠시 대기(이름 이벤트를 기다림) 후 승인 처리
+  scheduleApproval(client, amount, detectedName);
+  return { ok: true, result: 'pending', amount, name: detectedName };
 }
 
 module.exports = {

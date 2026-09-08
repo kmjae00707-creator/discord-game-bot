@@ -139,7 +139,18 @@ function createRequest(userId, username, requestedAmount, expectedName) {
 }
 
 /**
- * 입금된 금액과 일치하는 대기 요청을 찾아 소비합니다.
+ * 입금 금액과 일치하는 대기 요청을 소비하지 않고 조회합니다.
+ * @param {number} amount
+ * @returns {DepositRequest | null}
+ */
+function peekDeposit(amount) {
+  pruneExpired();
+  if (!Number.isSafeInteger(amount) || amount <= 0) return null;
+  return pendingByAmount.get(amount) || null;
+}
+
+/**
+ * 입금된 금액과 일치하는 대기 요청을 찾아 소비(삭제)합니다.
  * @param {number} amount
  * @returns {DepositRequest | null}
  */
@@ -211,6 +222,7 @@ function pendingCount() {
 
 module.exports = {
   createRequest,
+  peekDeposit,
   matchDeposit,
   isNameMatch,
   createApproval,
