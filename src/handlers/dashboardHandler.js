@@ -33,6 +33,10 @@ const CHARGE_MODAL_ID = 'dash|charge-modal';
 const CHARGE_AMOUNT_INPUT_ID = 'amount';
 const CHARGE_NAME_INPUT_ID = 'depositor';
 
+// 미매칭 입금 수동 충전 모달 (customId: dash|mfix-modal|<amount>)
+const MFIX_MODAL_PREFIX = 'dash|mfix-modal|';
+const MFIX_USER_INPUT_ID = 'userid';
+
 async function handleDashboardButton(interaction) {
   const action = interaction.customId.split('|')[1];
 
@@ -68,6 +72,16 @@ async function handleDashboardButton(interaction) {
 
   if (action === 'approve') {
     await handleApproveDeposit(interaction);
+    return;
+  }
+
+  if (action === 'mfix') {
+    await handleMismatchFixButton(interaction);
+    return;
+  }
+
+  if (action === 'mreject') {
+    await handleMismatchReject(interaction);
     return;
   }
 
@@ -461,6 +475,123 @@ async function handleRejectDeposit(interaction) {
   await interaction.message?.edit({ components: [] }).catch(() => {});
 }
 
+/**
+ * 미매칭 입금의 [확인(충전)] 버튼 → 충전할 유저를 입력받는 모달을 띄웁니다.
+ * customId: dash|mfix|<amount>
+ */
+async function handleMismatchFixButton(interaction) {
+  const amount = interaction.customId.split('|')[2];
+  const isAdministrator = interaction.memberPermissions?.has(
+    PermissionFlagsBits.Administrator
+  );
+
+  if (!isAdministrator) {
+    await deferEphemeral(interaction);
+    await interaction.editReply({ content: '관리자만 처리할 수 있습니다.' });
+    return;
+  }
+
+  await showModal(interaction, {
+    custom_id: `${MFIX_MODAL_PREFIX}${amount}`,
+    title: `수동 충전 (${Number(amount).toLocaleString()}원)`,
+    components: [
+      {
+        type: 1,
+        components: [
+          {
+            type: 4,
+            custom_id: MFIX_USER_INPUT_ID,
+            label: '충전할 유저 ID 또는 멘션',
+            style: 1,
+            min_length: 2,
+            max_length: 40,
+            placeholder: '예: 840401706826465300 또는 @유저',
+            required: true,
+          },
+        ],
+      },
+    ],
+  });
+}
+
+/**
+ * 미매칭 수동 충전 모달 제출 → 입력한 유저에게 금액 충전.
+ * customId: dash|mfix-modal|<amount>
+ */
+async function handleMismatchFixModalSubmit(interaction) {
+  await deferEphemeral(interaction);
+
+  const isAdministrator = interaction.memberPermissions?.has(
+    PermissionFlagsBits.Administrator
+  );
+  if (!isAdministrator) {
+    await interaction.editReply({ content: '관리자만 처리할 수 있습니다.' });
+    return;
+  }
+
+  const amount = Number(interaction.customId.split('|')[2]);
+  const rawUser = interaction.fields.getTextInputValue(MFIX_USER_INPUT_ID);
+  const userId = (rawUser.match(/\d{5,}/) || [])[0];
+
+  if (!Number.isSafeInteger(amount) || amount <= 0) {
+    await interaction.editReply({ content: '금액 정보가 올바르지 않습니다.' });
+    return;
+  }
+  if (!userId) {
+    await interaction.editReply({
+      content: '유저 ID를 인식하지 못했습니다. 숫자 ID 또는 멘션을 입력해 주세요.',
+    });
+    return;
+  }
+
+  try {
+    await updateBalance(userId, 'add', amount);
+    const { amount: balance } = await getBalance(userId);
+
+    try {
+      const user = await interaction.client.users.fetch(userId);
+      await user.send(
+        [
+          '입금이 관리자 확인으로 충전되었습니다.',
+          `충전 금액: **${amount.toLocaleString()}원**`,
+          `현재 잔액: **${balance.toLocaleString()}원**`,
+        ].join('\n')
+      );
+    } catch {
+      /* DM 실패 무시 */
+    }
+
+    await interaction.editReply({
+      content: `수동 충전 완료: <@${userId}> +${amount.toLocaleString()}원 (잔액 ${balance.toLocaleString()}원)`,
+    });
+  } catch (error) {
+    console.error('[dashboard] mismatch fix error:', error);
+    await interaction.editReply({ content: '충전 처리 중 오류가 발생했습니다.' });
+  }
+}
+
+/**
+ * 미매칭 입금 [거부] 버튼 → 처리 완료로 표시하고 버튼 제거.
+ * customId: dash|mreject|<amount>
+ */
+async function handleMismatchReject(interaction) {
+  const isAdministrator = interaction.memberPermissions?.has(
+    PermissionFlagsBits.Administrator
+  );
+
+  await deferEphemeral(interaction);
+
+  if (!isAdministrator) {
+    await interaction.editReply({ content: '관리자만 처리할 수 있습니다.' });
+    return;
+  }
+
+  await interaction.editReply({ content: '거부 처리했습니다.' });
+  await interaction.message
+    ?.edit({ components: [] })
+    .catch(() => {});
+}
+
 async function handleInfo(interaction) {
   await deferEphemeral(interaction);
 
@@ -513,10 +644,32 @@ async function handlePurchaseMenu(interaction) {
   }
 }
 
+/**
+ * 미매칭 입금 알림에 붙일 [확인(충전)] [거부] 버튼 행을 만듭니다.
+ * @param {number} amount
+ */
+function buildMismatchButtons(amount) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`dash|mfix|${amount}`)
+      .setLabel('확인 (충전)')
+      .setEmoji('✅')
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId(`dash|mreject|${amount}`)
+      .setLabel('거부')
+      .setEmoji('❌')
+      .setStyle(ButtonStyle.Danger)
+  );
+}
+
 module.exports = {
   handleDashboardButton,
   handleDashboardSelect,
   handleChargeModalSubmit,
+  handleMismatchFixModalSubmit,
   createRechargeChannel,
+  buildMismatchButtons,
   CHARGE_MODAL_ID,
+  MFIX_MODAL_PREFIX,
 };

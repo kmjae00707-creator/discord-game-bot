@@ -46,7 +46,10 @@ function clearScheduled(amount) {
   }
 }
 const { updateBalance, getBalance } = require('../utils/shopData');
-const { createRechargeChannel } = require('./dashboardHandler');
+const {
+  createRechargeChannel,
+  buildMismatchButtons,
+} = require('./dashboardHandler');
 
 /**
  * 알림 payload를 하나의 문자열로 합칩니다(제목 + 내용 + 원문).
@@ -234,17 +237,43 @@ async function handleNeedsApproval(client, request, amount, detectedName) {
 }
 
 /**
- * 대기 요청이 전혀 없는 미매칭 입금 → 관리자 확인용 티켓.
+ * 대기 요청이 전혀 없는 미매칭 입금 → [확인(충전)]/[거부] 버튼이 달린 알림 게시.
+ * 로그 채널이 설정돼 있으면 그곳에, 아니면 티켓 채널을 만들어 게시합니다.
  */
 async function handleMismatch(client, amount, detectedName) {
-  await notifyLogChannel(
-    client,
-    `미매칭 입금: **${amount.toLocaleString()}원** (이름: ${detectedName || '없음'}) — 대기 요청 없음. 수동 확인 필요.`
-  );
+  const embed = new EmbedBuilder()
+    .setColor(0xed4245)
+    .setTitle('미매칭 입금 확인 필요')
+    .setDescription(
+      [
+        `입금 금액: **${amount.toLocaleString()}원**`,
+        `감지된 이름: **${detectedName || '없음'}**`,
+        '',
+        '대기중인 충전 요청과 금액이 일치하지 않습니다.',
+        '토스에서 입금자를 확인한 뒤, 아래 **확인(충전)**으로 유저를 지정해 충전하거나 **거부**하세요.',
+      ].join('\n')
+    );
+  const row = buildMismatchButtons(amount);
 
+  // 1순위: 로그 채널에 버튼과 함께 게시
+  const logChannelId = process.env.DEPOSIT_LOG_CHANNEL_ID?.trim();
+  if (logChannelId) {
+    try {
+      const channel = await client.channels.fetch(logChannelId);
+      if (channel?.isTextBased()) {
+        await channel.send({ embeds: [embed], components: [row] });
+        console.log(`[deposit] mismatch posted to log channel: amount=${amount}`);
+        return;
+      }
+    } catch (error) {
+      console.error('[deposit] mismatch log post failed:', error.message);
+    }
+  }
+
+  // 2순위: 티켓 채널 생성 후 게시
   const guild = resolveGuild(client);
   if (!guild) {
-    console.warn('[deposit] mismatch but no guild available for ticket.');
+    console.warn('[deposit] mismatch but no guild/log channel available.');
     return;
   }
 
@@ -255,21 +284,7 @@ async function handleMismatch(client, amount, detectedName) {
       allowUserId: null,
       reason: `미매칭 입금 ${amount}원 확인`,
     });
-
-    const embed = new EmbedBuilder()
-      .setColor(0xed4245)
-      .setTitle('미매칭 입금 확인 필요')
-      .setDescription(
-        [
-          `입금 금액: **${amount.toLocaleString()}원**`,
-          `감지된 이름: **${detectedName || '없음'}**`,
-          '',
-          '대기중인 충전 요청과 금액이 일치하지 않습니다.',
-          '입금자를 확인 후 `/balance` 명령으로 수동 충전해 주세요.',
-        ].join('\n')
-      );
-
-    await channel.send({ embeds: [embed] });
+    await channel.send({ embeds: [embed], components: [row] });
     console.log(`[deposit] mismatch ticket created for amount=${amount}`);
   } catch (error) {
     console.error('[deposit] mismatch ticket creation failed:', error.message);

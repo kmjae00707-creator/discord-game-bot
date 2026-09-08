@@ -17,7 +17,9 @@ const {
   handleDashboardButton,
   handleDashboardSelect,
   handleChargeModalSubmit,
+  handleMismatchFixModalSubmit,
   CHARGE_MODAL_ID,
+  MFIX_MODAL_PREFIX,
 } = require('./src/handlers/dashboardHandler');
 const { processDeposit } = require('./src/handlers/depositHandler');
 
@@ -139,6 +141,14 @@ function attachClientHandlers(discordClient) {
 
       if (interaction.isModalSubmit() && interaction.customId === CHARGE_MODAL_ID) {
         await handleChargeModalSubmit(interaction);
+        return;
+      }
+
+      if (
+        interaction.isModalSubmit() &&
+        interaction.customId.startsWith(MFIX_MODAL_PREFIX)
+      ) {
+        await handleMismatchFixModalSubmit(interaction);
         return;
       }
 
