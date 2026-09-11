@@ -9,11 +9,13 @@ const {
 } = require('./shopData');
 
 const GPPOINT_FILE = 'gppoint';
+const SLOT_GP_FILE = 'slotgppoint';
 const ROBUX_FILE = 'robux';
 
 // 환율
 const WON_PER_GP = Number(process.env.WON_PER_GP) || 6.667; // 1 gppoint = 6.667원
 const ROBUX_PER_GP = Number(process.env.ROBUX_PER_GP) || 1; // 1 gppoint = 1 로벅스
+const SLOT_GP_PER_GP = Number(process.env.SLOT_GP_PER_GP) || 50; // 50 slotgppoint = 1 gppoint
 
 /** 원 잔액은 정수이므로 gp×환율을 반올림합니다. */
 function gpToWon(gpAmount) {
@@ -50,6 +52,12 @@ async function getGppoint(userId) {
   return { amount: points.get(userId) || 0, points };
 }
 
+async function getSlotGppoint(userId) {
+  const file = await readDataFile(SLOT_GP_FILE);
+  const points = parsePoints(file.content);
+  return { amount: points.get(userId) || 0, points };
+}
+
 async function getRobuxStock() {
   const file = await readDataFile(ROBUX_FILE);
   return { stock: parseRobuxStock(file.content) };
@@ -57,8 +65,8 @@ async function getRobuxStock() {
 
 /* ------------------------- 변경 작업(원자적) ------------------------- */
 
-async function executeGppointUpdate(userId, operation, amount = 0) {
-  const file = await readDataFile(GPPOINT_FILE);
+async function executePointUpdate(filename, userId, operation, amount = 0) {
+  const file = await readDataFile(filename);
   const points = parsePoints(file.content);
   const previous = points.get(userId) || 0;
   let next;
@@ -81,15 +89,23 @@ async function executeGppointUpdate(userId, operation, amount = 0) {
       points.delete(userId);
       break;
     default:
-      throw new Error(`Unsupported gppoint operation: ${operation}`);
+      throw new Error(`Unsupported point operation: ${operation}`);
   }
 
   await writeDataFiles(
-    [{ filename: GPPOINT_FILE, content: pointsToContent(points) }],
-    `gppoint: ${operation} ${userId} (${previous} -> ${next})`
+    [{ filename, content: pointsToContent(points) }],
+    `${filename}: ${operation} ${userId} (${previous} -> ${next})`
   );
 
   return { previous, amount: next };
+}
+
+async function executeGppointUpdate(userId, operation, amount = 0) {
+  return executePointUpdate(GPPOINT_FILE, userId, operation, amount);
+}
+
+async function executeSlotGppointUpdate(userId, operation, amount = 0) {
+  return executePointUpdate(SLOT_GP_FILE, userId, operation, amount);
 }
 
 /** gppoint를 원(잔액)으로 구매: 1gp = WON_PER_GP원. */
@@ -166,6 +182,42 @@ async function executeBuyRobux(userId, robuxAmount) {
   };
 }
 
+/** slotgppoint → gppoint 환전: SLOT_GP_PER_GP slotgp = 1 gp. */
+async function executeExchangeSlotGppoint(userId, gpAmount) {
+  const slotCost = gpAmount * SLOT_GP_PER_GP;
+
+  const slotFile = await readDataFile(SLOT_GP_FILE);
+  const slotPoints = parsePoints(slotFile.content);
+  const slot = slotPoints.get(userId) || 0;
+
+  if (slot < slotCost) {
+    return { status: 'insufficient_slot', slot, slotCost, gpAmount };
+  }
+
+  const gpFile = await readDataFile(GPPOINT_FILE);
+  const gpPoints = parsePoints(gpFile.content);
+  const gp = gpPoints.get(userId) || 0;
+
+  slotPoints.set(userId, slot - slotCost);
+  gpPoints.set(userId, gp + gpAmount);
+
+  await writeDataFiles(
+    [
+      { filename: SLOT_GP_FILE, content: pointsToContent(slotPoints) },
+      { filename: GPPOINT_FILE, content: pointsToContent(gpPoints) },
+    ],
+    `exchange slotgp: ${userId} -${slotCost}slotgp +${gpAmount}gp`
+  );
+
+  return {
+    status: 'success',
+    gpAmount,
+    slotCost,
+    slot: slot - slotCost,
+    gp: gp + gpAmount,
+  };
+}
+
 /* ------------------------- 공개 API(큐 경유) ------------------------- */
 
 function updateGppoint(userId, operation, amount) {
@@ -176,6 +228,16 @@ function updateGppoint(userId, operation, amount) {
     throw new Error('수량은 0 이상의 안전한 정수여야 합니다.');
   }
   return enqueue(() => executeGppointUpdate(userId, operation, amount));
+}
+
+function updateSlotGppoint(userId, operation, amount) {
+  if (!['add', 'remove', 'set', 'clear'].includes(operation)) {
+    throw new Error('유효하지 않은 slotgppoint 작업입니다.');
+  }
+  if (operation !== 'clear' && (!Number.isSafeInteger(amount) || amount < 0)) {
+    throw new Error('수량은 0 이상의 안전한 정수여야 합니다.');
+  }
+  return enqueue(() => executeSlotGppointUpdate(userId, operation, amount));
 }
 
 function buyGppoint(userId, gpAmount) {
@@ -192,13 +254,24 @@ function buyRobux(userId, robuxAmount) {
   return enqueue(() => executeBuyRobux(userId, robuxAmount));
 }
 
+function exchangeSlotGppoint(userId, gpAmount) {
+  if (!Number.isSafeInteger(gpAmount) || gpAmount <= 0) {
+    throw new Error('환전 수량은 1 이상의 정수여야 합니다.');
+  }
+  return enqueue(() => executeExchangeSlotGppoint(userId, gpAmount));
+}
+
 module.exports = {
   getGppoint,
+  getSlotGppoint,
   getRobuxStock,
   updateGppoint,
+  updateSlotGppoint,
   buyGppoint,
   buyRobux,
+  exchangeSlotGppoint,
   WON_PER_GP,
   ROBUX_PER_GP,
+  SLOT_GP_PER_GP,
   gpToWon,
 };

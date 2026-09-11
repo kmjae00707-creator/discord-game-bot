@@ -22,10 +22,12 @@ const {
   handleMismatchFixModalSubmit,
   handleRobuxModalSubmit,
   handleGpModalSubmit,
+  handleExchangeModalSubmit,
   CHARGE_MODAL_ID,
   MFIX_MODAL_PREFIX,
   ROBUX_MODAL_ID,
   GP_MODAL_ID,
+  EXCHANGE_MODAL_ID,
 } = require('./src/handlers/dashboardHandler');
 const { processDeposit } = require('./src/handlers/depositHandler');
 
@@ -169,6 +171,11 @@ function attachClientHandlers(discordClient) {
 
       if (interaction.isModalSubmit() && interaction.customId === GP_MODAL_ID) {
         await handleGpModalSubmit(interaction);
+        return;
+      }
+
+      if (interaction.isModalSubmit() && interaction.customId === EXCHANGE_MODAL_ID) {
+        await handleExchangeModalSubmit(interaction);
         return;
       }
 

@@ -25,12 +25,16 @@ const {
 } = require('../utils/depositRequests');
 const {
   getGppoint,
+  getSlotGppoint,
   getRobuxStock,
   buyRobux,
   buyGppoint,
+  exchangeSlotGppoint,
   WON_PER_GP,
   ROBUX_PER_GP,
+  SLOT_GP_PER_GP,
 } = require('../utils/gppointData');
+const { BALANCE_ADMIN_ID } = require('../commands/balance');
 
 // 입금 계좌 안내 문구 (환경 변수로 관리, 미설정 시 기본 안내)
 const DEPOSIT_ACCOUNT_INFO =
@@ -51,8 +55,12 @@ const CAT_BUY_SELECT = 'dash|catbuy';
 const INGAME_BUY_SELECT = 'dash|buy';
 const ROBUX_MODAL_ID = 'dash|robux-modal';
 const ROBUX_AMOUNT_INPUT_ID = 'robux';
+const ROBUX_NICK_INPUT_ID = 'rblxnick';
+const ROBUX_PASS_INPUT_ID = 'gamepass';
 const GP_MODAL_ID = 'dash|gp-modal';
 const GP_AMOUNT_INPUT_ID = 'gpqty';
+const EXCHANGE_MODAL_ID = 'dash|gp-exchange-modal';
+const EXCHANGE_AMOUNT_INPUT_ID = 'exgp';
 
 async function handleDashboardButton(interaction) {
   const action = interaction.customId.split('|')[1];
@@ -79,6 +87,11 @@ async function handleDashboardButton(interaction) {
 
   if (action === 'gpbuy') {
     await showGpBuyModal(interaction);
+    return;
+  }
+
+  if (action === 'gpexchange') {
+    await showExchangeModal(interaction);
     return;
   }
 
@@ -279,7 +292,8 @@ async function showRobuxInfo(interaction) {
           `현재 재고: **${stock.toLocaleString()} 로벅스**`,
           `내 gppoint: **${gp.toLocaleString()} gp**`,
           '',
-          'gppoint는 **GP구매**(1gp=6.667원) 또는 `/slot` 미니게임으로 모을 수 있어요.',
+          `gppoint는 **GP구매**(1gp=${WON_PER_GP}원) 또는 **GP환전**(${SLOT_GP_PER_GP} slotgp = 1 gp)으로 모아요.`,
+          '`/slot`은 slotgppoint를 줍니다.',
           '구매하려면 구매 버튼 → 로벅스를 선택하세요.',
         ].join('\n')
       );
@@ -622,7 +636,7 @@ async function handleRejectDeposit(interaction) {
   await interaction.message?.edit({ components: [] }).catch(() => {});
 }
 
-/** 로벅스 구매 수량 입력 모달을 띄웁니다. */
+/** 로벅스 구매 수량 + 닉 + 게임패스 링크 모달. */
 async function showRobuxBuyModal(interaction) {
   await showModal(interaction, {
     custom_id: ROBUX_MODAL_ID,
@@ -643,19 +657,81 @@ async function showRobuxBuyModal(interaction) {
           },
         ],
       },
+      {
+        type: 1,
+        components: [
+          {
+            type: 4,
+            custom_id: ROBUX_NICK_INPUT_ID,
+            label: '로블록스 닉네임',
+            style: 1,
+            min_length: 3,
+            max_length: 32,
+            placeholder: '예: MyRobloxName',
+            required: true,
+          },
+        ],
+      },
+      {
+        type: 1,
+        components: [
+          {
+            type: 4,
+            custom_id: ROBUX_PASS_INPUT_ID,
+            label: '게임패스 링크',
+            style: 1,
+            min_length: 12,
+            max_length: 300,
+            placeholder: 'https://www.roblox.com/game-pass/...',
+            required: true,
+          },
+        ],
+      },
     ],
   });
 }
 
-/** 로벅스 구매 모달 제출 → gppoint 차감 + 재고 차감 후 지급 안내. */
+function isGamePassLink(raw) {
+  try {
+    const url = new URL(raw.trim());
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+    const host = url.hostname.replace(/^www\./i, '').toLowerCase();
+    if (host !== 'roblox.com' && !host.endsWith('.roblox.com')) return false;
+    const hay = `${url.pathname}${url.search}`.toLowerCase();
+    return (
+      hay.includes('game-pass') ||
+      hay.includes('gamepass') ||
+      hay.includes('/store/')
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** 로벅스 구매 모달 제출 → gppoint 차감 + 재고 차감 후 관리자 DM. */
 async function handleRobuxModalSubmit(interaction) {
   await deferEphemeral(interaction);
 
   const raw = interaction.fields.getTextInputValue(ROBUX_AMOUNT_INPUT_ID);
+  const robloxNick = interaction.fields.getTextInputValue(ROBUX_NICK_INPUT_ID).trim();
+  const gamePassLink = interaction.fields.getTextInputValue(ROBUX_PASS_INPUT_ID).trim();
   const robuxAmount = Number(raw.replace(/[,\s]/g, ''));
 
   if (!Number.isSafeInteger(robuxAmount) || robuxAmount <= 0) {
     await interaction.editReply({ content: '올바른 수량을 숫자로 입력해 주세요. (예: 100)' });
+    return;
+  }
+
+  if (!robloxNick) {
+    await interaction.editReply({ content: '로블록스 닉네임을 입력해 주세요.' });
+    return;
+  }
+
+  if (!isGamePassLink(gamePassLink)) {
+    await interaction.editReply({
+      content:
+        '게임패스 링크가 올바르지 않습니다. roblox.com 게임패스 URL을 붙여넣어 주세요.',
+    });
     return;
   }
 
@@ -668,7 +744,7 @@ async function handleRobuxModalSubmit(interaction) {
           'gppoint가 부족합니다.',
           `필요: **${result.gpCost.toLocaleString()} gp**`,
           `보유: **${result.gp.toLocaleString()} gp**`,
-          '`/slot` 또는 `/gppoint buy`로 gppoint를 모아주세요.',
+          '`/slot` → **GP환전**, 또는 **GP구매**로 gppoint를 모아주세요.',
         ].join('\n'),
       });
       return;
@@ -681,11 +757,28 @@ async function handleRobuxModalSubmit(interaction) {
       return;
     }
 
-    // 지급 안내: 유저 DM + (설정 시) 관리자 채널 알림
+    const adminMessage = [
+      '로벅스 지급 요청',
+      `구매자: <@${interaction.user.id}> (${interaction.user.username})`,
+      `수량: **${result.robuxAmount.toLocaleString()} 로벅스**`,
+      `로블록스 닉: **${robloxNick}**`,
+      `게임패스: ${gamePassLink}`,
+      `남은 재고: ${result.stock.toLocaleString()}`,
+    ].join('\n');
+
+    try {
+      const admin = await interaction.client.users.fetch(BALANCE_ADMIN_ID);
+      await admin.send(adminMessage);
+    } catch (error) {
+      console.error('[dashboard] robux admin DM failed:', error.message);
+    }
+
     try {
       await interaction.user.send(
         [
           `로벅스 **${result.robuxAmount.toLocaleString()}** 구매 완료!`,
+          `닉: **${robloxNick}**`,
+          `게임패스: ${gamePassLink}`,
           `차감 gppoint: **${result.gpCost.toLocaleString()} gp** / 남은 gppoint: **${result.gp.toLocaleString()} gp**`,
           '지급까지 잠시만 기다려 주세요. (관리자가 확인 후 지급)',
         ].join('\n')
@@ -699,9 +792,7 @@ async function handleRobuxModalSubmit(interaction) {
       try {
         const channel = await interaction.client.channels.fetch(logChannelId);
         if (channel?.isTextBased()) {
-          await channel.send(
-            `로벅스 지급 요청: <@${interaction.user.id}> — **${result.robuxAmount.toLocaleString()} 로벅스** (남은 재고 ${result.stock.toLocaleString()})`
-          );
+          await channel.send(adminMessage);
         }
       } catch (error) {
         console.error('[dashboard] robux log post failed:', error.message);
@@ -711,9 +802,10 @@ async function handleRobuxModalSubmit(interaction) {
     await interaction.editReply({
       content: [
         `로벅스 **${result.robuxAmount.toLocaleString()}** 구매 완료!`,
+        `닉: **${robloxNick}**`,
         `남은 gppoint: **${result.gp.toLocaleString()} gp**`,
         `남은 재고: **${result.stock.toLocaleString()} 로벅스**`,
-        '지급 안내를 DM으로 보냈습니다.',
+        '관리자에게 지급 요청을 보냈습니다.',
       ].join('\n'),
     });
   } catch (error) {
@@ -784,6 +876,71 @@ async function handleGpModalSubmit(interaction) {
   } catch (error) {
     console.error('[dashboard] gp buy error:', error);
     await interaction.editReply({ content: 'gppoint 구매 처리 중 오류가 발생했습니다.' });
+  }
+}
+
+/** slotgppoint → gppoint 환전 모달. */
+async function showExchangeModal(interaction) {
+  await showModal(interaction, {
+    custom_id: EXCHANGE_MODAL_ID,
+    title: `GP환전 (${SLOT_GP_PER_GP} slotgp = 1gp)`,
+    components: [
+      {
+        type: 1,
+        components: [
+          {
+            type: 4,
+            custom_id: EXCHANGE_AMOUNT_INPUT_ID,
+            label: '받을 gppoint 수량',
+            style: 1,
+            min_length: 1,
+            max_length: 9,
+            placeholder: '예: 1 (slotgp 50 차감)',
+            required: true,
+          },
+        ],
+      },
+    ],
+  });
+}
+
+async function handleExchangeModalSubmit(interaction) {
+  await deferEphemeral(interaction);
+
+  const raw = interaction.fields.getTextInputValue(EXCHANGE_AMOUNT_INPUT_ID);
+  const gpAmount = Number(raw.replace(/[,\s]/g, ''));
+
+  if (!Number.isSafeInteger(gpAmount) || gpAmount <= 0) {
+    await interaction.editReply({ content: '올바른 수량을 숫자로 입력해 주세요. (예: 1)' });
+    return;
+  }
+
+  try {
+    const result = await exchangeSlotGppoint(interaction.user.id, gpAmount);
+
+    if (result.status === 'insufficient_slot') {
+      await interaction.editReply({
+        content: [
+          'slotgppoint가 부족합니다.',
+          `필요: **${result.slotCost.toLocaleString()} slotgp** (${gpAmount}gp × ${SLOT_GP_PER_GP})`,
+          `보유: **${result.slot.toLocaleString()} slotgp**`,
+          '`/slot`으로 slotgppoint를 모아주세요.',
+        ].join('\n'),
+      });
+      return;
+    }
+
+    await interaction.editReply({
+      content: [
+        `환전 완료: **${result.gpAmount.toLocaleString()} gppoint**`,
+        `차감: **${result.slotCost.toLocaleString()} slotgp**`,
+        `남은 slotgppoint: **${result.slot.toLocaleString()} slotgp**`,
+        `현재 gppoint: **${result.gp.toLocaleString()} gp**`,
+      ].join('\n'),
+    });
+  } catch (error) {
+    console.error('[dashboard] gp exchange error:', error);
+    await interaction.editReply({ content: '환전 처리 중 오류가 발생했습니다.' });
   }
 }
 
@@ -910,6 +1067,7 @@ async function handleInfo(interaction) {
   try {
     const { amount } = await getBalance(interaction.user.id);
     const { amount: gp } = await getGppoint(interaction.user.id);
+    const { amount: slotGp } = await getSlotGppoint(interaction.user.id);
     const { stock } = await getRobuxStock();
 
     const embed = new EmbedBuilder()
@@ -919,10 +1077,12 @@ async function handleInfo(interaction) {
         [
           `잔액: **${amount.toLocaleString()}원**`,
           `gppoint: **${gp.toLocaleString()} gp**`,
+          `slotgppoint: **${slotGp.toLocaleString()} slotgp**`,
           `로벅스 재고: **${stock.toLocaleString()}**`,
           '',
           `환율: **1 gp = ${ROBUX_PER_GP} 로벅스 = ${WON_PER_GP}원**`,
-          'gppoint 모으기: **GP구매** 또는 `/slot`',
+          `환전: **${SLOT_GP_PER_GP} slotgp = 1 gp**`,
+          'gppoint: **GP구매**(원) / **GP환전**(slotgp) / `/slot`',
         ].join('\n')
       );
 
@@ -998,10 +1158,12 @@ module.exports = {
   handleMismatchFixModalSubmit,
   handleRobuxModalSubmit,
   handleGpModalSubmit,
+  handleExchangeModalSubmit,
   createRechargeChannel,
   buildMismatchButtons,
   CHARGE_MODAL_ID,
   MFIX_MODAL_PREFIX,
   ROBUX_MODAL_ID,
   GP_MODAL_ID,
+  EXCHANGE_MODAL_ID,
 };

@@ -1,13 +1,12 @@
 const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const { deferEphemeral } = require('../utils/interactionResponse');
-const { updateGppoint } = require('../utils/gppointData');
+const { updateSlotGppoint, SLOT_GP_PER_GP } = require('../utils/gppointData');
 
-// 슬롯 심볼과 각 심볼 3개 일치 시 대박 보상
 const SYMBOLS = ['🍒', '🍋', '🔔', '⭐', '💎', '7️⃣'];
 const JACKPOT_SYMBOL = '7️⃣';
 
-// 재획득 쿨다운 (기본 30초)
-const COOLDOWN_MS = Number(process.env.SLOT_COOLDOWN_MS) || 30_000;
+// 재획득 쿨다운 (기본 2분)
+const COOLDOWN_MS = Number(process.env.SLOT_COOLDOWN_MS) || 2 * 60 * 1000;
 
 /** @type {Map<string, number>} userId -> 마지막 플레이 시각 */
 const lastPlayed = new Map();
@@ -19,7 +18,7 @@ function spin() {
   );
 }
 
-/** 스핀 결과로 보상 gppoint와 설명을 계산합니다. */
+/** 스핀 결과로 보상 slotgppoint와 설명을 계산합니다. */
 function evaluate(reels) {
   const [a, b, c] = reels;
 
@@ -34,14 +33,17 @@ function evaluate(reels) {
 }
 
 function formatRemaining(ms) {
-  const seconds = Math.ceil(ms / 1000);
-  return `${seconds}초`;
+  const totalSeconds = Math.ceil(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes <= 0) return `${seconds}초`;
+  return `${minutes}분 ${seconds}초`;
 }
 
 const slotCommand = {
   data: new SlashCommandBuilder()
     .setName('slot')
-    .setDescription('슬롯머신을 돌려 gppoint를 획득합니다. (무료)')
+    .setDescription(`슬롯머신을 돌려 slotgppoint를 획득합니다. (${SLOT_GP_PER_GP} slotgp = 1 gp)`)
     .setDMPermission(false),
 
   async execute(interaction) {
@@ -66,7 +68,7 @@ const slotCommand = {
     try {
       const reels = spin();
       const { reward, label, color } = evaluate(reels);
-      const { amount } = await updateGppoint(userId, 'add', reward);
+      const { amount } = await updateSlotGppoint(userId, 'add', reward);
 
       const embed = new EmbedBuilder()
         .setColor(color)
@@ -75,15 +77,15 @@ const slotCommand = {
           [
             `**[ ${reels.join(' | ')} ]**`,
             label,
-            `획득: **+${reward} gppoint**`,
-            `현재 gppoint: **${amount.toLocaleString()} gp**`,
+            `획득: **+${reward} slotgppoint**`,
+            `현재 slotgppoint: **${amount.toLocaleString()} slotgp**`,
+            `환전: **${SLOT_GP_PER_GP} slotgp = 1 gppoint** (대시보드 GP환전)`,
           ].join('\n')
         );
 
       await interaction.editReply({ embeds: [embed] });
     } catch (error) {
       console.error('[slot] error:', error);
-      // 실패 시 쿨다운 초기화(사용자 손해 방지)
       lastPlayed.delete(userId);
       await interaction.editReply({
         content: '슬롯 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.',

@@ -24,7 +24,8 @@ const dashboardCommand = {
           '• 원하시는 버튼을 클릭해 주세요.',
           '• 제품: **로벅스** / **인게임**',
           '• 로벅스 = gppoint로 구매 (1 gp = 1 로벅스 = 6.667원)',
-          '• gppoint는 **GP구매** 또는 `/slot` 미니게임으로 모읍니다.',
+          '• `/slot`으로 slotgppoint를 모으고 **GP환전**(50 slotgp = 1 gp)',
+          '• gppoint는 **GP구매**(원) 또는 환전으로 모읍니다.',
           '• 24시간 자동충전 및 구매가 가능합니다.',
         ].join('\n')
       );
@@ -45,18 +46,25 @@ const dashboardCommand = {
       new ButtonBuilder()
         .setCustomId('dash|purchase')
         .setLabel('구매')
-        .setStyle(ButtonStyle.Primary),
+        .setStyle(ButtonStyle.Primary)
+    );
+
+    const row2 = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId('dash|gpbuy')
         .setLabel('GP구매')
-        .setStyle(ButtonStyle.Success)
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId('dash|gpexchange')
+        .setLabel('GP환전')
+        .setStyle(ButtonStyle.Primary)
     );
 
     await replyEphemeral(interaction, '대시보드를 게시했습니다.');
 
     await interaction.channel.send({
       embeds: [embed],
-      components: [row],
+      components: [row, row2],
     });
   },
 };
