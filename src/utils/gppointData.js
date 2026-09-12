@@ -7,6 +7,7 @@ const {
   balancesToContent,
   BALANCE_FILE,
 } = require('./shopData');
+const { buildPurchaseLogUpdate, buildSoldUpdate } = require('./userLedger');
 
 const GPPOINT_FILE = 'gppoint';
 const SLOT_GP_FILE = 'slotgppoint';
@@ -165,10 +166,17 @@ async function executeBuyRobux(userId, robuxAmount) {
 
   points.set(userId, gp - gpCost);
 
+  const robuxProduct = {
+    category: '로벅스',
+    name: `로벅스 ${robuxAmount}`,
+  };
+
   await writeDataFiles(
     [
       { filename: GPPOINT_FILE, content: pointsToContent(points) },
       { filename: ROBUX_FILE, content: robuxStockToContent(stock - robuxAmount) },
+      await buildSoldUpdate(robuxProduct),
+      await buildPurchaseLogUpdate(userId, robuxProduct, robuxAmount, gpCost),
     ],
     `buy robux: ${userId} -${robuxAmount}robux (-${gpCost}gp)`
   );

@@ -137,7 +137,7 @@ async function notifyLogChannel(client, message) {
 
 /** 잔액을 충전하고 유저에게 DM을 보냅니다. */
 async function creditUser(client, userId, amount, reasonLabel) {
-  await updateBalance(userId, 'add', amount);
+  await updateBalance(userId, 'add', amount, { rechargeType: '계좌충전' });
   const { amount: balance } = await getBalance(userId);
 
   try {

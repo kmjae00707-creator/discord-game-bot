@@ -10,6 +10,7 @@ const {
 const { RECHARGE_CATEGORY_ID } = require('../commands/dashboard');
 const {
   getProducts,
+  getCategories,
   getBalance,
   purchaseProduct,
   updateBalance,
@@ -35,6 +36,20 @@ const {
   SLOT_GP_PER_GP,
 } = require('../utils/gppointData');
 const { BALANCE_ADMIN_ID } = require('../commands/balance');
+const { writeDataFiles } = require('../utils/dataStore');
+const { enqueue } = require('../utils/mutationQueue');
+const {
+  getNotice,
+  getUserRank,
+  getPurchaseLogs,
+  getRechargeLogs,
+  getSoldMap,
+  getVerifiedSet,
+  getRanks,
+  soldKey,
+  formatKst,
+  buildVerifiedUpdate,
+} = require('../utils/userLedger');
 
 // 입금 계좌 안내 문구 (환경 변수로 관리, 미설정 시 기본 안내)
 const DEPOSIT_ACCOUNT_INFO =
@@ -53,6 +68,8 @@ const MFIX_USER_INPUT_ID = 'userid';
 const CAT_VIEW_SELECT = 'dash|catview';
 const CAT_BUY_SELECT = 'dash|catbuy';
 const INGAME_BUY_SELECT = 'dash|buy';
+const PLOG_SELECT = 'dash|plog';
+const CLOG_SELECT = 'dash|clog';
 const ROBUX_MODAL_ID = 'dash|robux-modal';
 const ROBUX_AMOUNT_INPUT_ID = 'robux';
 const ROBUX_NICK_INPUT_ID = 'rblxnick';
@@ -67,6 +84,11 @@ async function handleDashboardButton(interaction) {
 
   if (action === 'products') {
     await handleProducts(interaction);
+    return;
+  }
+
+  if (action === 'notice') {
+    await handleNotice(interaction);
     return;
   }
 
@@ -92,6 +114,26 @@ async function handleDashboardButton(interaction) {
 
   if (action === 'gpexchange') {
     await showExchangeModal(interaction);
+    return;
+  }
+
+  if (action === 'plog') {
+    await handlePurchaseLog(interaction);
+    return;
+  }
+
+  if (action === 'clog') {
+    await handleRechargeLog(interaction);
+    return;
+  }
+
+  if (action === 'ranks') {
+    await handleRanks(interaction);
+    return;
+  }
+
+  if (action === 'verify') {
+    await handleVerify(interaction);
     return;
   }
 
@@ -143,6 +185,14 @@ async function handleDashboardSelect(interaction) {
   }
   if (customId === INGAME_BUY_SELECT) {
     await handleIngameBuySelect(interaction);
+    return;
+  }
+  if (customId === PLOG_SELECT) {
+    await handlePurchaseLogSelect(interaction);
+    return;
+  }
+  if (customId === CLOG_SELECT) {
+    await handleRechargeLogSelect(interaction);
   }
 }
 
@@ -159,8 +209,12 @@ async function handleIngameBuySelect(interaction) {
     }
 
     if (result.status === 'insufficient') {
+      const discountLine =
+        result.discount > 0
+          ? `\n등급 할인 ${result.discount}% 적용가: **${result.price.toLocaleString()}원**`
+          : '';
       await interaction.editReply({
-        content: `잔액이 부족합니다.\n현재 잔액: **${result.balance.toLocaleString()}원**\n필요 금액: **${result.price.toLocaleString()}원**`,
+        content: `잔액이 부족합니다.\n현재 잔액: **${result.balance.toLocaleString()}원**\n필요 금액: **${result.price.toLocaleString()}원**${discountLine}`,
       });
       return;
     }
@@ -183,7 +237,14 @@ async function handleIngameBuySelect(interaction) {
     }
 
     await interaction.editReply({
-      content: `**${result.product.name}** 구매 완료!\n남은 잔액: **${result.balance.toLocaleString()}원**\n제품 내용을 DM으로 보냈습니다.`,
+      content: [
+        `**${result.product.name}** 구매 완료!`,
+        result.discount > 0
+          ? `결제: **${result.price.toLocaleString()}원** (${result.discount}% 할인)`
+          : `결제: **${result.price.toLocaleString()}원**`,
+        `남은 잔액: **${result.balance.toLocaleString()}원**`,
+        '제품 내용을 DM으로 보냈습니다.',
+      ].join('\n'),
     });
   } catch (error) {
     console.error('[dashboard] purchase error:', error);
@@ -193,37 +254,94 @@ async function handleIngameBuySelect(interaction) {
   }
 }
 
-/** 카테고리 선택 메뉴(로벅스/인게임)를 만듭니다. */
-function buildCategoryMenu(customId) {
+/** 카테고리 선택 메뉴를 만듭니다. 로벅스 + GitHub 카테고리. */
+async function buildCategoryMenu(customId) {
+  const { products } = await getProducts();
+  const categories = getCategories(products).filter((item) => item.name !== '로벅스');
+  const { stock } = await getRobuxStock();
+
+  const options = [
+    {
+      label: '로벅스',
+      description: `1개 제품 · 재고 ${stock.toLocaleString()}`,
+      value: 'robux',
+    },
+    ...categories.slice(0, 24).map((category) => ({
+      label: category.name.slice(0, 100),
+      description: `${category.count}개 제품`.slice(0, 100),
+      value: category.name.slice(0, 100),
+    })),
+  ];
+
   const menu = new StringSelectMenuBuilder()
     .setCustomId(customId)
     .setPlaceholder('카테고리를 선택하세요')
-    .addOptions(
-      { label: '로벅스', description: 'gppoint로 로벅스 구매', value: 'robux', emoji: '💰' },
-      { label: '인게임', description: '원(잔액)으로 인게임 제품 구매', value: 'ingame', emoji: '🎮' }
-    );
+    .addOptions(options);
   return new ActionRowBuilder().addComponents(menu);
 }
 
-// 제품 버튼 → 카테고리 선택(보기)
+function stockLabel(product, sold) {
+  const stockText = product.unlimited ? '무제한' : `${product.stock}개`;
+  return `${stockText} / 판매 ${sold}회`;
+}
+
+async function handleNotice(interaction) {
+  await deferEphemeral(interaction);
+  try {
+    const notice = await getNotice();
+    const embed = new EmbedBuilder()
+      .setColor(0x5865f2)
+      .setTitle('📢 공지사항')
+      .setDescription(notice.slice(0, 4096));
+    await interaction.editReply({ embeds: [embed] });
+  } catch (error) {
+    console.error('[dashboard] notice error:', error);
+    await interaction.editReply({ content: '공지를 불러오지 못했습니다.' });
+  }
+}
+
 async function handleProducts(interaction) {
   await deferEphemeral(interaction);
-  await interaction.editReply({
-    content: '어떤 카테고리를 볼까요?',
-    components: [buildCategoryMenu(CAT_VIEW_SELECT)],
-  });
+  try {
+    const { products } = await getProducts();
+    const categories = getCategories(products);
+    const lines = [
+      '조회하실 카테고리를 선택해 주세요.',
+      '',
+      '• 로벅스 : 1개',
+      ...categories.map((category) => `• ${category.name} : ${category.count}개`),
+    ];
+    const embed = new EmbedBuilder()
+      .setColor(0x5865f2)
+      .setTitle('카테고리 선택')
+      .setDescription(lines.join('\n'));
+    await interaction.editReply({
+      embeds: [embed],
+      components: [await buildCategoryMenu(CAT_VIEW_SELECT)],
+    });
+  } catch (error) {
+    console.error('[dashboard] products error:', error);
+    await interaction.editReply({ content: '카테고리를 불러오지 못했습니다.' });
+  }
 }
 
-// 구매 버튼 → 카테고리 선택(구매)
 async function handlePurchaseMenu(interaction) {
   await deferEphemeral(interaction);
-  await interaction.editReply({
-    content: '어떤 카테고리를 구매할까요?',
-    components: [buildCategoryMenu(CAT_BUY_SELECT)],
-  });
+  try {
+    const embed = new EmbedBuilder()
+      .setColor(0x5865f2)
+      .setTitle('🛒 카테고리 선택')
+      .setDescription('구매할 카테고리를 선택해 주세요.');
+    await interaction.editReply({
+      embeds: [embed],
+      components: [await buildCategoryMenu(CAT_BUY_SELECT)],
+    });
+  } catch (error) {
+    console.error('[dashboard] purchase menu error:', error);
+    await interaction.editReply({ content: '카테고리를 불러오지 못했습니다.' });
+  }
 }
 
-// 카테고리 선택(보기) 처리
 async function handleCategoryView(interaction) {
   await deferEphemeral(interaction);
   const category = interaction.values[0];
@@ -232,10 +350,9 @@ async function handleCategoryView(interaction) {
     await showRobuxInfo(interaction);
     return;
   }
-  await showIngameList(interaction);
+  await showCategoryProductList(interaction, category);
 }
 
-// 카테고리 선택(구매) 처리
 async function handleCategoryBuy(interaction) {
   await deferEphemeral(interaction);
   const category = interaction.values[0];
@@ -244,35 +361,39 @@ async function handleCategoryBuy(interaction) {
     await showRobuxBuyPrompt(interaction);
     return;
   }
-  await showIngameBuyMenu(interaction);
+  await showIngameBuyMenu(interaction, category);
 }
 
-// 인게임 제품 목록 표시
-async function showIngameList(interaction) {
+async function showCategoryProductList(interaction, category) {
   try {
     const { products } = await getProducts();
+    const soldMap = await getSoldMap();
+    const items = products.filter((product) => product.category === category);
 
-    if (products.length === 0) {
-      await interaction.editReply({ content: '등록된 인게임 제품이 없습니다.', components: [] });
+    if (items.length === 0) {
+      await interaction.editReply({ content: '이 카테고리에 제품이 없습니다.', components: [] });
       return;
     }
 
-    const list = products
-      .map(
-        (product, index) =>
-          `• **${index + 1}. ${product.name}** — ${product.price.toLocaleString()}원`
-      )
-      .join('\n');
+    const list = items
+      .map((product) => {
+        const sold = soldMap.get(soldKey(product)) || 0;
+        return [
+          `• 제품명: **${product.name}**`,
+          `• 가격: ${product.price.toLocaleString()}원`,
+          `• 재고: ${stockLabel(product, sold)}`,
+        ].join('\n');
+      })
+      .join('\n\n');
 
     const embed = new EmbedBuilder()
       .setColor(0x5865f2)
-      .setTitle('인게임 제품 목록')
-      .setDescription(list)
-      .setFooter({ text: '구매 → 인게임에서 원하는 제품을 선택해 주세요.' });
+      .setTitle(`${category} 제품 목록 (1/1)`)
+      .setDescription(list.slice(0, 4096));
 
     await interaction.editReply({ embeds: [embed], components: [] });
   } catch (error) {
-    console.error('[dashboard] products error:', error);
+    console.error('[dashboard] category list error:', error);
     await interaction.editReply({ content: '제품 목록을 불러오지 못했습니다.', components: [] });
   }
 }
@@ -288,13 +409,10 @@ async function showRobuxInfo(interaction) {
       .setTitle('로벅스')
       .setDescription(
         [
-          `환율: **1 gppoint = ${ROBUX_PER_GP} 로벅스 = ${WON_PER_GP}원**`,
-          `현재 재고: **${stock.toLocaleString()} 로벅스**`,
-          `내 gppoint: **${gp.toLocaleString()} gp**`,
-          '',
-          `gppoint는 **GP구매**(1gp=${WON_PER_GP}원) 또는 **GP환전**(${SLOT_GP_PER_GP} slotgp = 1 gp)으로 모아요.`,
-          '`/slot`은 slotgppoint를 줍니다.',
-          '구매하려면 구매 버튼 → 로벅스를 선택하세요.',
+          `• 제품명: **로벅스**`,
+          `• 가격: **1 gppoint = ${ROBUX_PER_GP} 로벅스 (${WON_PER_GP}원)**`,
+          `• 재고: ${stock.toLocaleString()} / gppoint로 구매`,
+          `• 내 gppoint: **${gp.toLocaleString()} gp**`,
         ].join('\n')
       );
 
@@ -575,7 +693,9 @@ async function handleApproveDeposit(interaction) {
   }
 
   try {
-    await updateBalance(approval.userId, 'add', approval.amount);
+    await updateBalance(approval.userId, 'add', approval.amount, {
+      rechargeType: '계좌충전',
+    });
     const { amount: balance } = await getBalance(approval.userId);
 
     try {
@@ -1014,7 +1134,7 @@ async function handleMismatchFixModalSubmit(interaction) {
   }
 
   try {
-    await updateBalance(userId, 'add', amount);
+    await updateBalance(userId, 'add', amount, { rechargeType: '수동충전' });
     const { amount: balance } = await getBalance(userId);
 
     try {
@@ -1065,42 +1185,264 @@ async function handleInfo(interaction) {
   await deferEphemeral(interaction);
 
   try {
-    const { amount } = await getBalance(interaction.user.id);
-    const { amount: gp } = await getGppoint(interaction.user.id);
-    const { amount: slotGp } = await getSlotGppoint(interaction.user.id);
-    const { stock } = await getRobuxStock();
+    const userId = interaction.user.id;
+    const [{ amount }, { amount: gp }, { rank, charged }, verified] = await Promise.all([
+      getBalance(userId),
+      getGppoint(userId),
+      getUserRank(userId),
+      getVerifiedSet(),
+    ]);
 
     const embed = new EmbedBuilder()
       .setColor(0x5865f2)
       .setTitle('내 정보')
       .setDescription(
         [
-          `잔액: **${amount.toLocaleString()}원**`,
-          `gppoint: **${gp.toLocaleString()} gp**`,
-          `slotgppoint: **${slotGp.toLocaleString()} slotgp**`,
-          `로벅스 재고: **${stock.toLocaleString()}**`,
-          '',
-          `환율: **1 gp = ${ROBUX_PER_GP} 로벅스 = ${WON_PER_GP}원**`,
-          `환전: **${SLOT_GP_PER_GP} slotgp = 1 gp**`,
-          'gppoint: **GP구매**(원) / **GP환전**(slotgp) / `/slot`',
+          `• 닉네임: **${interaction.user.username}**`,
+          `• 보유금액: **${amount.toLocaleString()}원**`,
+          `• 누적금액: **${charged.toLocaleString()}원**`,
+          `• 포인트 잔액: **${gp.toLocaleString()}원**`,
+          `• 적용된 등급: **${rank.name}**${verified.has(userId) ? ' · 인증됨' : ''}`,
         ].join('\n')
       );
 
-    await interaction.editReply({ embeds: [embed] });
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('dash|plog')
+        .setLabel('구매로그')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId('dash|clog')
+        .setLabel('충전로그')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId('dash|ranks')
+        .setLabel('등업조건')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId('dash|verify')
+        .setLabel('인증하기')
+        .setStyle(ButtonStyle.Primary)
+    );
+
+    const row2 = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('dash|gpbuy')
+        .setLabel('GP구매')
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId('dash|gpexchange')
+        .setLabel('GP환전')
+        .setStyle(ButtonStyle.Primary)
+    );
+
+    await interaction.editReply({ embeds: [embed], components: [row, row2] });
   } catch (error) {
     console.error('[dashboard] info error:', error);
     await interaction.editReply({ content: '잔액 정보를 불러오지 못했습니다.' });
   }
 }
 
-// 인게임 제품 구매 선택 메뉴 (이미 defer된 상태에서 호출)
-async function showIngameBuyMenu(interaction) {
+async function handlePurchaseLog(interaction) {
+  await deferEphemeral(interaction);
+  const logs = await getPurchaseLogs(interaction.user.id);
+
+  if (logs.length === 0) {
+    await interaction.editReply({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(0x5865f2)
+          .setTitle('구매 로그')
+          .setDescription('최근 구매한 내역이 없습니다.'),
+      ],
+    });
+    return;
+  }
+
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId(PLOG_SELECT)
+    .setPlaceholder('확인할 구매로그를 선택하세요.')
+    .addOptions(
+      logs.slice(0, 25).map((log, index) => ({
+        label: `${log.name} | ${log.qty}개 | ${log.price.toLocaleString()}원`.slice(0, 100),
+        description: formatKst(log.at).slice(0, 100),
+        value: String(index),
+      }))
+    );
+
+  const embed = new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle('구매 로그')
+    .setDescription(`최근 구매한 ${logs.length}개의 로그입니다.`);
+
+  await interaction.editReply({
+    embeds: [embed],
+    components: [new ActionRowBuilder().addComponents(menu)],
+  });
+}
+
+async function handlePurchaseLogSelect(interaction) {
+  await deferEphemeral(interaction);
+  const logs = await getPurchaseLogs(interaction.user.id);
+  const log = logs[Number(interaction.values[0])];
+  if (!log) {
+    await interaction.editReply({ content: '로그를 찾을 수 없습니다.' });
+    return;
+  }
+
+  await interaction.editReply({
+    embeds: [
+      new EmbedBuilder()
+        .setColor(0x5865f2)
+        .setTitle('구매 상세')
+        .setDescription(
+          [
+            `제품: **${log.name}**`,
+            `카테고리: ${log.category || '-'}`,
+            `수량: **${log.qty}개**`,
+            `결제: **${log.price.toLocaleString()}원**`,
+            `시각: ${formatKst(log.at)}`,
+          ].join('\n')
+        ),
+    ],
+  });
+}
+
+async function handleRechargeLog(interaction) {
+  await deferEphemeral(interaction);
+  const logs = await getRechargeLogs(interaction.user.id);
+
+  if (logs.length === 0) {
+    await interaction.editReply({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(0x57f287)
+          .setTitle('충전 로그')
+          .setDescription('최근 충전한 내역이 없습니다.'),
+      ],
+    });
+    return;
+  }
+
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId(CLOG_SELECT)
+    .setPlaceholder('충전 내역을 선택하세요')
+    .addOptions(
+      logs.slice(0, 25).map((log, index) => ({
+        label: `금액 ${log.amount.toLocaleString()}원 · ${log.type}`.slice(0, 100),
+        description: formatKst(log.at).slice(0, 100),
+        value: String(index),
+      }))
+    );
+
+  const embed = new EmbedBuilder()
+    .setColor(0x57f287)
+    .setTitle('충전 로그')
+    .setDescription(`최근 충전한 ${logs.length}개의 로그가 표시됩니다.`);
+
+  await interaction.editReply({
+    embeds: [embed],
+    components: [new ActionRowBuilder().addComponents(menu)],
+  });
+}
+
+async function handleRechargeLogSelect(interaction) {
+  await deferEphemeral(interaction);
+  const logs = await getRechargeLogs(interaction.user.id);
+  const log = logs[Number(interaction.values[0])];
+  if (!log) {
+    await interaction.editReply({ content: '로그를 찾을 수 없습니다.' });
+    return;
+  }
+
+  await interaction.editReply({
+    embeds: [
+      new EmbedBuilder()
+        .setColor(0x57f287)
+        .setTitle('충전 상세')
+        .setDescription(
+          [
+            `금액: **${log.amount.toLocaleString()}원**`,
+            `유형: **${log.type}**`,
+            `시각: ${formatKst(log.at)}`,
+          ].join('\n')
+        ),
+    ],
+  });
+}
+
+async function handleRanks(interaction) {
+  await deferEphemeral(interaction);
+  const { rank, charged, ranks } = await getUserRank(interaction.user.id);
+  const list = ranks
+    .map((item) => {
+      const current = item.name === rank.name ? ' ← 현재' : '';
+      const cond =
+        item.minCharged <= 0 ? '조건 없음' : `누적 ${item.minCharged.toLocaleString()}원`;
+      return `• **${item.name}**: ${cond} · 혜택 ${item.benefit}${current}`;
+    })
+    .join('\n');
+
+  const embed = new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle('등업 조건')
+    .setDescription(
+      [
+        `현재 등급: **${rank.name}**`,
+        `누적 충전: **${charged.toLocaleString()}원**`,
+        '',
+        list,
+        '',
+        '조건/혜택은 GitHub `data/ranks`에서 수정합니다. 혜택은 구매 할인(%)입니다.',
+      ].join('\n')
+    );
+
+  await interaction.editReply({ embeds: [embed] });
+}
+
+async function handleVerify(interaction) {
+  await deferEphemeral(interaction);
+  const userId = interaction.user.id;
+  const [{ charged }, verified] = await Promise.all([
+    getUserRank(userId),
+    getVerifiedSet(),
+  ]);
+
+  if (verified.has(userId)) {
+    await interaction.editReply({ content: '이미 인증되어 있습니다.' });
+    return;
+  }
+
+  if (charged <= 0) {
+    await interaction.editReply({
+      content: '인증하려면 먼저 충전이 필요합니다.',
+    });
+    return;
+  }
+
+  await enqueue(async () => {
+    await writeDataFiles([await buildVerifiedUpdate(userId)], `verify: ${userId}`);
+  });
+
+  const roleId = process.env.VERIFIED_ROLE_ID?.trim();
+  if (roleId && interaction.member?.roles) {
+    await interaction.member.roles.add(roleId).catch((error) => {
+      console.error('[dashboard] verify role failed:', error.message);
+    });
+  }
+
+  await interaction.editReply({ content: '인증이 완료되었습니다.' });
+}
+
+async function showIngameBuyMenu(interaction, category) {
   try {
     const { products } = await getProducts();
+    const soldMap = await getSoldMap();
+    const items = products.filter((product) => product.category === category);
 
-    if (products.length === 0) {
+    if (items.length === 0) {
       await interaction.editReply({
-        content: '등록된 인게임 제품이 없습니다.',
+        content: '이 카테고리에 제품이 없습니다.',
         components: [],
       });
       return;
@@ -1108,20 +1450,31 @@ async function showIngameBuyMenu(interaction) {
 
     const menu = new StringSelectMenuBuilder()
       .setCustomId(INGAME_BUY_SELECT)
-      .setPlaceholder('구매할 제품을 선택하세요')
+      .setPlaceholder('제품을 선택하세요')
       .addOptions(
-        products.slice(0, 25).map((product) => ({
-          label: product.name.slice(0, 100),
-          description: `${product.price.toLocaleString()}원`.slice(0, 100),
-          value: product.id,
-        }))
+        items.slice(0, 25).map((product) => {
+          const sold = soldMap.get(soldKey(product)) || 0;
+          const stock = product.unlimited ? '무제한' : String(product.stock);
+          return {
+            label: product.name.slice(0, 100),
+            description:
+              `제품 가격: ${product.price.toLocaleString()}원 | 남은 재고: ${stock} | 판매횟수: ${sold}`.slice(
+                0,
+                100
+              ),
+            value: product.id,
+          };
+        })
       );
 
-    const row = new ActionRowBuilder().addComponents(menu);
+    const embed = new EmbedBuilder()
+      .setColor(0x5865f2)
+      .setTitle(`${category}`)
+      .setDescription('구매할 제품을 선택해 주세요.');
 
     await interaction.editReply({
-      content: '구매할 인게임 제품을 선택해 주세요.',
-      components: [row],
+      embeds: [embed],
+      components: [new ActionRowBuilder().addComponents(menu)],
     });
   } catch (error) {
     console.error('[dashboard] purchase menu error:', error);

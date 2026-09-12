@@ -1,7 +1,14 @@
 const { readDataFile, writeDataFiles } = require('./dataStore');
 const { enqueue } = require('./mutationQueue');
+const {
+  getUserRank,
+  discountedPrice,
+  buildChargedUpdate,
+  buildSoldUpdate,
+  buildPurchaseLogUpdate,
+  buildRechargeLogUpdate,
+} = require('./userLedger');
 
-// 인게임 제품은 ingame 파일에서 읽고, 없으면 기존 shop 파일로 폴백합니다.
 const INGAME_FILE = 'ingame';
 const LEGACY_SHOP_FILE = 'shop';
 const BALANCE_FILE = 'balance';
@@ -11,34 +18,68 @@ const PENDING_KEY_FILES = {
   rtkey: 'unusedrtkey',
 };
 
-// 잔액·gppoint·재고 변경을 공용 큐로 직렬화
 const enqueueBalanceMutation = enqueue;
 
 function parseShop(content) {
-  return content
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line && !line.startsWith('#'))
-    .map((line, index) => {
-      const parts = line.split('|');
-      if (parts.length < 3) return null;
+  const products = [];
 
-      const name = parts[0].trim();
-      const price = Number(parts[1].trim());
-      const productContent = parts.slice(2).join('|').trim();
+  content.split(/\r?\n/).forEach((raw, lineIndex) => {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) return;
 
-      if (!name || Number.isNaN(price) || price < 0 || !productContent) {
-        return null;
-      }
+    const parts = line.split('|');
+    let category;
+    let name;
+    let price;
+    let stock;
+    let productContent;
 
-      return {
-        id: String(index),
-        name,
-        price,
-        content: productContent,
-      };
-    })
-    .filter(Boolean);
+    if (parts.length >= 5 && !Number.isNaN(Number(parts[2]))) {
+      category = parts[0].trim();
+      name = parts[1].trim();
+      price = Number(parts[2].trim());
+      stock = Number(parts[3].trim());
+      productContent = parts.slice(4).join('|').trim();
+    } else if (parts.length >= 3) {
+      category = '인게임';
+      name = parts[0].trim();
+      price = Number(parts[1].trim());
+      stock = -1;
+      productContent = parts.slice(2).join('|').trim();
+    } else {
+      return;
+    }
+
+    if (!category || !name || Number.isNaN(price) || price < 0 || !productContent) {
+      return;
+    }
+
+    const unlimited = !Number.isSafeInteger(stock) || stock < 0;
+    products.push({
+      id: `p${products.length}`,
+      lineIndex,
+      category,
+      name,
+      price,
+      stock: unlimited ? -1 : stock,
+      unlimited,
+      content: productContent,
+    });
+  });
+
+  return products;
+}
+
+function serializeProductLine(product) {
+  const stock = product.unlimited ? -1 : product.stock;
+  return `${product.category}|${product.name}|${product.price}|${stock}|${product.content}`;
+}
+
+function replaceProductLine(fileContent, product) {
+  const lines = fileContent.split(/\r?\n/);
+  if (!lines[product.lineIndex]) return fileContent;
+  lines[product.lineIndex] = serializeProductLine(product);
+  return lines.join('\n').replace(/\n*$/, '\n');
 }
 
 function parseBalances(content) {
@@ -68,13 +109,26 @@ function balancesToContent(balances) {
     .join('\n')}\n`;
 }
 
-async function getProducts() {
+async function readShopFile() {
   let file = await readDataFile(INGAME_FILE);
-  // ingame 파일이 비어 있으면 기존 shop 파일에서 읽습니다(마이그레이션 호환).
   if (!file.content || !file.content.trim()) {
     file = await readDataFile(LEGACY_SHOP_FILE);
+    return { ...file, filename: LEGACY_SHOP_FILE };
   }
-  return { products: parseShop(file.content), sha: file.sha };
+  return { ...file, filename: INGAME_FILE };
+}
+
+async function getProducts() {
+  const file = await readShopFile();
+  return { products: parseShop(file.content), sha: file.sha, filename: file.filename };
+}
+
+function getCategories(products) {
+  const counts = new Map();
+  for (const product of products) {
+    counts.set(product.category, (counts.get(product.category) || 0) + 1);
+  }
+  return Array.from(counts.entries()).map(([name, count]) => ({ name, count }));
 }
 
 async function getBalance(userId) {
@@ -117,28 +171,40 @@ function appendKeys(content, keys) {
 }
 
 async function executePurchase(userId, productId) {
-  const { products } = await getProducts();
+  const shop = await readShopFile();
+  const products = parseShop(shop.content);
   const product = products.find((item) => item.id === productId);
 
   if (!product) {
     return { status: 'not_found' };
   }
 
+  if (!product.unlimited && product.stock <= 0) {
+    return { status: 'out_of_stock', product };
+  }
+
+  const { rank } = await getUserRank(userId);
+  const price = discountedPrice(product.price, rank.discount);
+
   const balanceFile = await readDataFile(BALANCE_FILE);
   const balances = parseBalances(balanceFile.content);
   const current = balances.get(userId) || 0;
 
-  if (current < product.price) {
+  if (current < price) {
     return {
       status: 'insufficient',
       balance: current,
-      price: product.price,
+      price,
+      originalPrice: product.price,
+      discount: rank.discount,
     };
   }
 
-  const requiredKeyFiles = [...new Set(
-    Array.from(product.content.matchAll(KEY_PLACEHOLDER_PATTERN), (match) => match[1])
-  )];
+  const requiredKeyFiles = [
+    ...new Set(
+      Array.from(product.content.matchAll(KEY_PLACEHOLDER_PATTERN), (match) => match[1])
+    ),
+  ];
   const keyFiles = new Map();
   const selectedKeys = new Map();
 
@@ -154,13 +220,18 @@ async function executePurchase(userId, productId) {
     selectedKeys.set(filename, key);
   }
 
-  balances.set(userId, current - product.price);
+  balances.set(userId, current - price);
+
+  const nextProduct = {
+    ...product,
+    stock: product.unlimited ? -1 : product.stock - 1,
+  };
 
   const updates = [
-    {
-      filename: BALANCE_FILE,
-      content: balancesToContent(balances),
-    },
+    { filename: BALANCE_FILE, content: balancesToContent(balances) },
+    { filename: shop.filename, content: replaceProductLine(shop.content, nextProduct) },
+    await buildSoldUpdate(product),
+    await buildPurchaseLogUpdate(userId, product, 1, price),
   ];
 
   for (const [filename, file] of keyFiles) {
@@ -181,10 +252,7 @@ async function executePurchase(userId, productId) {
     }
   }
 
-  await writeDataFiles(
-    updates,
-    `purchase: ${userId} bought ${product.name}`
-  );
+  await writeDataFiles(updates, `purchase: ${userId} bought ${product.name}`);
 
   const deliveryContent = product.content.replace(
     KEY_PLACEHOLDER_PATTERN,
@@ -197,7 +265,10 @@ async function executePurchase(userId, productId) {
       ...product,
       content: deliveryContent,
     },
-    balance: current - product.price,
+    balance: current - price,
+    price,
+    originalPrice: product.price,
+    discount: rank.discount,
   };
 }
 
@@ -205,7 +276,7 @@ function purchaseProduct(userId, productId) {
   return enqueueBalanceMutation(() => executePurchase(userId, productId));
 }
 
-async function executeBalanceUpdate(userId, operation, amount = 0) {
+async function executeBalanceUpdate(userId, operation, amount = 0, meta = {}) {
   const file = await readDataFile(BALANCE_FILE);
   const balances = parseBalances(file.content);
   const previousBalance = balances.get(userId) || 0;
@@ -232,37 +303,43 @@ async function executeBalanceUpdate(userId, operation, amount = 0) {
       throw new Error(`Unsupported balance operation: ${operation}`);
   }
 
+  const updates = [
+    { filename: BALANCE_FILE, content: balancesToContent(balances) },
+  ];
+
+  if (operation === 'add' && amount > 0 && meta.rechargeType) {
+    updates.push(await buildChargedUpdate(userId, amount));
+    updates.push(await buildRechargeLogUpdate(userId, amount, meta.rechargeType));
+  }
+
   await writeDataFiles(
-    [{ filename: BALANCE_FILE, content: balancesToContent(balances) }],
+    updates,
     `balance: ${operation} ${userId} (${previousBalance} -> ${balance})`
   );
 
   return { previousBalance, balance };
 }
 
-function updateBalance(userId, operation, amount) {
+function updateBalance(userId, operation, amount, meta = {}) {
   if (!['add', 'remove', 'set', 'clear'].includes(operation)) {
     throw new Error('유효하지 않은 잔액 작업입니다.');
   }
 
-  if (
-    operation !== 'clear' &&
-    (!Number.isSafeInteger(amount) || amount < 0)
-  ) {
+  if (operation !== 'clear' && (!Number.isSafeInteger(amount) || amount < 0)) {
     throw new Error('금액은 0 이상의 안전한 정수여야 합니다.');
   }
 
   return enqueueBalanceMutation(() =>
-    executeBalanceUpdate(userId, operation, amount)
+    executeBalanceUpdate(userId, operation, amount, meta)
   );
 }
 
 module.exports = {
   getProducts,
+  getCategories,
   getBalance,
   purchaseProduct,
   updateBalance,
-  // gppointData 등에서 잔액을 원자적으로 함께 갱신할 때 재사용
   parseBalances,
   balancesToContent,
   BALANCE_FILE,

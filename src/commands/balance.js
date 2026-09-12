@@ -89,7 +89,9 @@ const balanceCommand = {
         operation === 'clear'
           ? 0
           : interaction.options.getInteger('금액', true);
-      const result = await updateBalance(user.id, operation, amount);
+      const result = await updateBalance(user.id, operation, amount, {
+        rechargeType: operation === 'add' ? '수동충전' : undefined,
+      });
 
       const operationLabels = {
         add: '추가',
