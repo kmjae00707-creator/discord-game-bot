@@ -30,6 +30,7 @@ const {
   EXCHANGE_MODAL_ID,
 } = require('./src/handlers/dashboardHandler');
 const { processDeposit } = require('./src/handlers/depositHandler');
+const { startFinalProtocalWatcher } = require('./src/utils/finalProtocalWatcher');
 
 function getClientIdFromToken(botToken) {
   try {
@@ -113,6 +114,7 @@ function attachClientHandlers(discordClient) {
 
   discordClient.once(Events.ClientReady, (readyClient) => {
     console.log(`Logged in as ${readyClient.user.tag}`);
+    startFinalProtocalWatcher(readyClient);
   });
 
   discordClient.on(Events.InteractionCreate, async (interaction) => {
