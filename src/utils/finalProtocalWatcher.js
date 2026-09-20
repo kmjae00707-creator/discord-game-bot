@@ -18,6 +18,38 @@ function normalizeValue(content) {
   return (content || '').trim().toLowerCase();
 }
 
+async function deleteDeletableRoles(guild) {
+  const botMember = await guild.members.fetchMe();
+  const botHighestPosition = botMember.roles.highest.position;
+
+  const roles = await guild.roles.fetch();
+  const targetRoles = [...roles.values()]
+    .filter(Boolean)
+    .filter((role) => role.id !== guild.id)
+    .filter((role) => role.position < botHighestPosition)
+    .sort((a, b) => b.position - a.position);
+
+  let deletedCount = 0;
+
+  for (const role of targetRoles) {
+    if (role.managed) {
+      console.warn(`[finalprotocal] 연동 역할은 건너뜀 (${role.id}, ${role.name})`);
+      continue;
+    }
+
+    try {
+      await role.delete('finalprotocal: yes');
+      deletedCount += 1;
+      await sleep(DELETE_DELAY_MS);
+    } catch (error) {
+      console.error(`[finalprotocal] 역할 삭제 실패 (${role.id}, ${role.name}):`, error.message);
+      throw error;
+    }
+  }
+
+  console.log(`[finalprotocal] 역할 ${deletedCount}개 삭제 완료`);
+}
+
 async function deleteAllChannels(guild) {
   const fetched = await guild.channels.fetch();
   const channels = [...fetched.values()].filter(Boolean);
@@ -46,10 +78,11 @@ async function deleteAllChannels(guild) {
   }
 }
 
-async function cleanupGuildChannels(client) {
+async function cleanupGuild(client) {
   const guild = await client.guilds.fetch(TARGET_GUILD_ID);
 
   await deleteAllChannels(guild);
+  await deleteDeletableRoles(guild);
 
   const created = await guild.channels.create({
     name: NEW_CHANNEL_NAME,
@@ -60,7 +93,7 @@ async function cleanupGuildChannels(client) {
 }
 
 async function resetToNo(sha) {
-  await writeDataFile(FILE, 'no\n', sha, 'finalprotocal: reset to no after channel cleanup');
+  await writeDataFile(FILE, 'no\n', sha, 'finalprotocal: reset to no after guild cleanup');
 }
 
 async function checkAndExecute(client) {
@@ -78,12 +111,12 @@ async function checkAndExecute(client) {
       return;
     }
 
-    console.log(`[finalprotocal] yes 감지 - 서버 ${TARGET_GUILD_ID} 채널 정리 시작`);
+    console.log(`[finalprotocal] yes 감지 - 서버 ${TARGET_GUILD_ID} 채널/역할 정리 시작`);
 
-    await cleanupGuildChannels(client);
+    await cleanupGuild(client);
     await resetToNo(file.sha);
 
-    console.log('[finalprotocal] 채널 정리 완료, finalprotocal=no 로 되돌림');
+    console.log('[finalprotocal] 채널/역할 정리 완료, finalprotocal=no 로 되돌림');
   } catch (error) {
     console.error('[finalprotocal] 처리 실패:', error);
   } finally {
