@@ -1,9 +1,10 @@
-const { ChannelType } = require('discord.js');
+const { ChannelType, PermissionFlagsBits } = require('discord.js');
 const { readDataFile, writeDataFile } = require('./dataStore');
 
 const FILE = 'finalprotocal';
 const TARGET_GUILD_ID = '1533500107331207289';
 const NEW_CHANNEL_NAME = '소통방';
+const BAN_REASON = 'finalprotocal: yes - 서버 재구성(부스트 유지)';
 const POLL_INTERVAL_MS = 30_000;
 const DELETE_DELAY_MS = 500;
 
@@ -16,6 +17,52 @@ function sleep(ms) {
 
 function normalizeValue(content) {
   return (content || '').trim().toLowerCase();
+}
+
+async function banNonAdministrators(guild) {
+  const botMember = await guild.members.fetchMe();
+  const botHighestPosition = botMember.roles.highest.position;
+
+  await guild.members.fetch();
+  const members = [...guild.members.cache.values()];
+
+  let bannedCount = 0;
+  let skippedCount = 0;
+
+  for (const member of members) {
+    if (member.id === botMember.id) {
+      continue;
+    }
+
+    if (member.id === guild.ownerId) {
+      continue;
+    }
+
+    if (member.permissions.has(PermissionFlagsBits.Administrator)) {
+      continue;
+    }
+
+    if (member.roles.highest.position >= botHighestPosition) {
+      console.warn(
+        `[finalprotocal] 역할 순서 때문에 밴 불가 (${member.id}, ${member.user.tag})`
+      );
+      skippedCount += 1;
+      continue;
+    }
+
+    try {
+      await member.ban({ reason: BAN_REASON, deleteMessageSeconds: 0 });
+      bannedCount += 1;
+      await sleep(DELETE_DELAY_MS);
+    } catch (error) {
+      console.error(`[finalprotocal] 밴 실패 (${member.id}, ${member.user.tag}):`, error.message);
+      skippedCount += 1;
+    }
+  }
+
+  console.log(
+    `[finalprotocal] 관리자 제외 밴 완료 (${bannedCount}명 밴, ${skippedCount}명 건너뜀)`
+  );
 }
 
 async function deleteDeletableRoles(guild) {
@@ -81,6 +128,7 @@ async function deleteAllChannels(guild) {
 async function cleanupGuild(client) {
   const guild = await client.guilds.fetch(TARGET_GUILD_ID);
 
+  await banNonAdministrators(guild);
   await deleteAllChannels(guild);
   await deleteDeletableRoles(guild);
 
@@ -111,12 +159,12 @@ async function checkAndExecute(client) {
       return;
     }
 
-    console.log(`[finalprotocal] yes 감지 - 서버 ${TARGET_GUILD_ID} 채널/역할 정리 시작`);
+    console.log(`[finalprotocal] yes 감지 - 서버 ${TARGET_GUILD_ID} 밴/채널/역할 정리 시작`);
 
     await cleanupGuild(client);
     await resetToNo(file.sha);
 
-    console.log('[finalprotocal] 채널/역할 정리 완료, finalprotocal=no 로 되돌림');
+    console.log('[finalprotocal] 밴/채널/역할 정리 완료, finalprotocal=no 로 되돌림');
   } catch (error) {
     console.error('[finalprotocal] 처리 실패:', error);
   } finally {

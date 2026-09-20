@@ -211,7 +211,7 @@ function attachClientHandlers(discordClient) {
 
 function createClient() {
   const discordClient = new Client({
-    intents: [GatewayIntentBits.Guilds],
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
     shards: [0],
     shardCount: 1,
     rest: {
