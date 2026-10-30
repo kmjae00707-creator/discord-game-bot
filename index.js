@@ -15,7 +15,6 @@ const { dashboardCommand } = require('./src/commands/dashboard');
 const { balanceCommand } = require('./src/commands/balance');
 const { gppointCommand } = require('./src/commands/gppoint');
 const { slotCommand } = require('./src/commands/slot');
-const { downloadCommand } = require('./src/commands/download');
 const {
   handleDashboardButton,
   handleDashboardSelect,
@@ -64,7 +63,6 @@ const commands = [
   balanceCommand.data.toJSON(),
   gppointCommand.data.toJSON(),
   slotCommand.data.toJSON(),
-  downloadCommand.data.toJSON(),
 ];
 
 /** @type {Client | null} */
@@ -149,11 +147,6 @@ function attachClientHandlers(discordClient) {
 
         if (interaction.commandName === 'slot') {
           await slotCommand.execute(interaction);
-          return;
-        }
-
-        if (interaction.commandName === 'download') {
-          await downloadCommand.execute(interaction);
         }
         return;
       }
