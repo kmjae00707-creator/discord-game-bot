@@ -1,3 +1,3 @@
-1.3.3
-https://github.com/kmjae00707-creator/discord-game-bot/releases/download/afkwatch-v1.3.3/AfkWatch-Setup.exe
+1.3.4
+https://github.com/kmjae00707-creator/discord-game-bot/releases/download/afkwatch-v1.3.4/AfkWatch-Setup.exe
 
